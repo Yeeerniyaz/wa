@@ -486,7 +486,7 @@ async function generateAIResponse(messageText, senderName, jid) {
 
         // Новый SDK: systemInstruction передаётся на уровне модели
         const model = genAI.getGenerativeModel({
-            model: 'gemini-1.5-flash',
+            model: 'gemini-1.0-pro', // Откат на 1.0 Pro, так как ключ не поддерживает 1.5/2.0
             systemInstruction: sysInstruction,
         });
 
