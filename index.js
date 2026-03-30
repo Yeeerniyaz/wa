@@ -503,7 +503,7 @@ async function generateAIResponse(messageText, senderName, jid) {
                 'X-Title': 'WhatsApp Bot'
             },
             body: JSON.stringify({
-                model: 'meta-llama/llama-3.3-70b-instruct:free', // Самая мощная открытая модель (бесплатная)
+                model: 'openrouter/free', // Авто-выбор любой доступной бесплатной модели, если кто-то перегружен
                 messages: history,
                 temperature: 0.7,
                 max_tokens: 1024,
