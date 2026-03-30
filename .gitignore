@@ -1,7 +1,6 @@
 node_modules/
-auth_info/
 .wwebjs_auth/
-database.json
+# Папка с данными (БД, сессия WA, логи)
+data/
 *.bak.*
 .env
-bot.log

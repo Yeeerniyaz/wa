@@ -16,8 +16,6 @@ services:
         reservations:
           memory: 64M
     volumes:
-      - /opt/wa_bot/auth_info:/app/auth_info       # Baileys-сессия
-      - /opt/wa_bot/database.json:/app/database.json
-      - /opt/wa_bot/bot.log:/app/bot.log
+      - /opt/wa_bot/data:/app/data       # Единая папка для сессии и БД (решает баг Docker)
     stdin_open: true   # для первоначального QR-кода
     tty: true
