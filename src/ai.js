@@ -7,10 +7,8 @@ const aiConversations = new Map();
 
 // Модели для fallback (от сильных бесплатным к быстрым)
 const fallbackModels = [
-    'qwen/qwen-2.5-72b-instruct:free',
     'meta-llama/llama-3.3-70b-instruct:free',
-    'mistralai/mistral-7b-instruct:free',
-    'google/gemma-2-9b-it:free'
+    'openrouter/free'
 ];
 
 export async function generateAIResponse(messageText, senderName, jid) {

@@ -16,6 +16,12 @@ if (!TG_TOKEN || !TG_CHAT_ID) {
 
 const tgBot = new TelegramBot(TG_TOKEN, { polling: true });
 
+// Установка системного синего меню (возле смайликов/скрепки)
+tgBot.setMyCommands([
+    { command: '/menu', description: '🚀 Главное меню (Все кнопки)' },
+    { command: '/top', description: '📊 Топ-10 активных чатов' }
+]).catch(err => console.error('Ошибка меню Telegram:', err.message));
+
 export const sendToTelegram = async (text, extra = {}) => {
     try {
         await tgBot.sendMessage(TG_CHAT_ID, text, { parse_mode: 'Markdown', ...extra });
