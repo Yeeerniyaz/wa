@@ -166,10 +166,19 @@ async function handleMessage(msg) {
             autoReplied = true;
             db.incStat('custom_replies');
         } else if (settings.aiEnabled && !mediaType && text) {
-            const aiText = await generateAIResponse(text, pushName, jid);
-            if (aiText) {
-                await reply({ text: `🤖 ${aiText}` });
-                autoReplied = true;
+            const personalPrompt = db.getCustomPrompt(jid);
+            const activePrompt = personalPrompt || settings.globalAIPrompt || null;
+            
+            if (activePrompt) {
+                const aiText = await generateAIResponse(pushName, activePrompt);
+                if (aiText) {
+                    await reply({ text: `🤖 ${aiText}` });
+                    autoReplied = true;
+                } else if (settings.autoReplyUrgent) {
+                    await reply({ text: settings.defaultAutoReply });
+                    autoReplied = true;
+                    db.incStat('auto_replies');
+                }
             } else if (settings.autoReplyUrgent) {
                 await reply({ text: settings.defaultAutoReply });
                 autoReplied = true;

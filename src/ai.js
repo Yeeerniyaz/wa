@@ -11,22 +11,20 @@ const fallbackModels = [
     'openrouter/free'
 ];
 
-export async function generateAIResponse(messageText, senderName, jid) {
+export async function generateAIResponse(senderName, activePrompt) {
     if (!OPENROUTER_API_KEY) return null;
     try {
-        const customPrompt = db.getCustomPrompt(jid);
-        const sysInstruction = customPrompt
-            ? `Сен Ернияздың виртуалды көмекшісісің. "${senderName}" үшін арнайы ереже: "${customPrompt}". Осыған қатаң бағын.`
-            : `Сен Ернияздың виртуалды көмекшісісің. Ол қазір бос емес. Жауапты қысқа, мазмұнды, жеңіл әзілмен жаз. Адам қазақша жазса — қазақша, орысша — орысша, ағылшынша — ағылшынша.`;
+        // Жесткая изоляция ИИ от реальных сообщений. Он больше не ведет диалогов.
+        const sysInstruction = `Сен Ернияздың ботысың. Саған адамдармен сөйлесуге, олардың сұрақтарына (мысалы 2+2) жауап беруге ҚАТАҢ ТЫЙЫМ САЛЫНАДЫ. Сен тек мына ережені орындауың керек: "${activePrompt || ''}". Осы ереже бойынша ғана қысқа жауап бер.`;
 
-        if (!aiConversations.has(jid)) {
-            aiConversations.set(jid, [{ role: 'system', content: sysInstruction }]);
-        }
+        // ВМЕСТО реального текста сообщения передаем заглушку
+        const blindMessage = `[Бұл автоматты триггер. Маған ешқандай сұраққа жауап берме, тек өзіңе берілген ережені (промпт) орындап, бір ғана қысқа жауап жаз.]`;
 
-        const history = aiConversations.get(jid);
-        // Обновляем системный промпт
-        history[0].content = sysInstruction;
-        history.push({ role: 'user', content: messageText });
+        // Больше никакой памяти (history). Автоответчику она вредит.
+        const history = [
+            { role: 'system', content: sysInstruction },
+            { role: 'user', content: blindMessage }
+        ];
 
         let aiText = 'Кешіріңіз, түсінбедім.';
 
@@ -61,13 +59,6 @@ export async function generateAIResponse(messageText, senderName, jid) {
                 db.log(`⚠️ AI Warning (${modelId}): ${err.message}`);
                 // Идем к следующей модели...
             }
-        }
-
-        history.push({ role: 'assistant', content: aiText });
-
-        // Ограничиваем историю 15 репликами
-        if (history.length > 15) {
-            history.splice(1, history.length - 15);
         }
 
         db.incStat('ai_replies');

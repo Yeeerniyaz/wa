@@ -69,6 +69,9 @@ const getMainMenu = () => {
                 ],
                 // 4 РЯД: Умный ИИ
                 [
+                    { text: '🌍 ИИ для ВСЕХ (Шаблоны)', callback_data: 'show_ai_templates' },
+                ],
+                [
                     { text: '🧠 Добавить правило ИИ', callback_data: 'ask_prompt_add' },
                     { text: '➖ Удалить правило ИИ', callback_data: 'ask_prompt_del' },
                 ],
@@ -131,6 +134,14 @@ tgBot.on('message', async (tgMsg) => {
             db.setSetting('defaultAutoReply', text);
             db.forceSave();
             await sendToTelegram('✅ Базовый текст автоответа успешно обновлён!');
+            userStates.delete(TG_CHAT_ID);
+            return;
+        }
+
+        if (state.action === 'set_global_ai') {
+            db.setSetting('globalAIPrompt', text);
+            db.forceSave();
+            await sendToTelegram(`✅ Отлично! Теперь ИИ отвечает всем по правилу:\n_${text}_`);
             userStates.delete(TG_CHAT_ID);
             return;
         }
@@ -371,6 +382,79 @@ tgBot.on('callback_query', async (query) => {
         userStates.set(TG_CHAT_ID, { action: 'del_prompt' });
         await sendToTelegram('➖ Введите номер абонента для удаления его индивидуального правила ИИ:', cancelKeyboard);
         await tgBot.answerCallbackQuery(query.id);
+    }
+
+    else if (action === 'show_ai_templates') {
+        const templatesMarkup = {
+            reply_markup: {
+                inline_keyboard: [
+                    [{ text: '🚗 За рулём', callback_data: 'set_ai_template_1' }],
+                    [{ text: '😴 Сплю', callback_data: 'set_ai_template_2' }],
+                    [{ text: '👍 Соглашаться со всем', callback_data: 'set_ai_template_3' }],
+                    [{ text: '💼 На совещании', callback_data: 'set_ai_template_4' }],
+                    [{ text: '✏️ Свой текст для всех', callback_data: 'ask_global_ai' }],
+                    [{ text: '❌ Выключить ИИ для всех', callback_data: 'disable_global_ai' }],
+                    [{ text: '🔙 Назад', callback_data: 'back_to_menu' }]
+                ]
+            }
+        };
+        const currentGlobal = db.getSettings().globalAIPrompt || 'Отключен (ИИ отвечает только по личным правилам)';
+        await tgBot.editMessageText(`🌍 *Глобальное поведение ИИ*\nТекущий режим для всех: _${currentGlobal}_\n\nВыберите готовый шаблон или напишите свой:`, {
+            chat_id: query.message.chat.id,
+            message_id: query.message.message_id,
+            parse_mode: 'Markdown',
+            ...templatesMarkup
+        });
+        return;
+    }
+
+    else if (action.startsWith('set_ai_template_')) {
+        const t = action.split('_')[3];
+        let p = '';
+        if (t === '1') p = 'Скажи, что я веду машину и отвечу позже.';
+        if (t === '2') p = 'Скажи, что я сейчас сплю.';
+        if (t === '3') p = 'Соглашайся со всем, что скажет собеседник, но отвечай очень коротко.';
+        if (t === '4') p = 'Скажи, что я на совещании по работе.';
+        
+        db.setSetting('globalAIPrompt', p);
+        db.forceSave();
+        await tgBot.answerCallbackQuery(query.id, { text: '✅ Глобальный шаблон применен!' });
+        await tgBot.editMessageText(`✅ *Успешно!*\nИИ теперь отвечает всем: _${p}_`, {
+            chat_id: query.message.chat.id,
+            message_id: query.message.message_id,
+            parse_mode: 'Markdown',
+            reply_markup: { inline_keyboard: [[{ text: '🔙 Назад', callback_data: 'back_to_menu' }]] }
+        });
+        return;
+    }
+
+    else if (action === 'ask_global_ai') {
+        userStates.set(TG_CHAT_ID, { action: 'set_global_ai' });
+        await sendToTelegram('🌍 *Свой глобальный промпт*\nНапишите инструкцию для ИИ, которая будет применяться ко ВСЕМ контактам (если у них нет личного правила):', cancelKeyboard);
+        await tgBot.answerCallbackQuery(query.id);
+    }
+
+    else if (action === 'disable_global_ai') {
+        db.setSetting('globalAIPrompt', '');
+        db.forceSave();
+        await tgBot.answerCallbackQuery(query.id, { text: '❌ Глобальный ИИ отключен' });
+        await tgBot.editMessageText(`✅ *Глобальный ИИ отключен.*\nТеперь нейросеть будет отвечать только тем контактам, для которых задано личное правило. Всем остальным улетит базовый ответ.`, {
+            chat_id: query.message.chat.id,
+            message_id: query.message.message_id,
+            parse_mode: 'Markdown',
+            reply_markup: { inline_keyboard: [[{ text: '🔙 Назад', callback_data: 'back_to_menu' }]] }
+        });
+        return;
+    }
+
+    else if (action === 'back_to_menu') {
+        await tgBot.editMessageText('🚀 *ГЛАВНОЕ УПРАВЛЕНИЕ БОТОМ*\nВыберите действие из меню кнопок ниже:', {
+            chat_id: query.message.chat.id,
+            message_id: query.message.message_id,
+            parse_mode: 'Markdown',
+            ...getMainMenu()
+        });
+        return;
     }
 
     else if (action === 'ask_ai_reset') {
