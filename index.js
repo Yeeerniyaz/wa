@@ -487,7 +487,7 @@ async function generateAIResponse(messageText, senderName, jid) {
         if (!aiConversations.has(jid)) {
             aiConversations.set(jid, [{ role: 'system', content: sysInstruction }]);
         }
-        
+
         const history = aiConversations.get(jid);
         // Обновляем системный промпт (он всегда первый)
         history[0].content = sysInstruction;
@@ -509,12 +509,12 @@ async function generateAIResponse(messageText, senderName, jid) {
         });
 
         if (!response.ok) throw new Error(`OpenRouter API error: ${response.status}`);
-        
+
         const data = await response.json();
         const aiText = data.choices[0]?.message?.content || 'Кешіріңіз, түсінбедім.';
 
         history.push({ role: 'assistant', content: aiText });
-        
+
         // Ограничиваем историю (оставляем system + последние 14 сообщений = 7 обменов)
         if (history.length > 15) {
             history.splice(1, history.length - 15);
@@ -748,8 +748,8 @@ tgBot.on('callback_query', async (query) => {
 
     if (action.startsWith('toggle_')) {
         const key = action.replace('toggle_', '');
-        if (key === 'aiEnabled' && !GEMINI_API_KEY) {
-            await tgBot.answerCallbackQuery(query.id, { text: '❌ Нет GEMINI_API_KEY в .env', show_alert: true });
+        if (key === 'aiEnabled' && !OPENROUTER_API_KEY) {
+            await tgBot.answerCallbackQuery(query.id, { text: '❌ Нет OPENROUTER_API_KEY в .env', show_alert: true });
             return;
         }
         const s = db.toggleSetting(key);
