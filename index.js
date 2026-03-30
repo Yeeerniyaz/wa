@@ -494,34 +494,48 @@ async function generateAIResponse(messageText, senderName, jid) {
 
         history.push({ role: 'user', content: messageText });
 
-        const response = await fetch('https://openrouter.ai/api/v1/chat/completions', {
-            method: 'POST',
-            headers: {
-                'Authorization': `Bearer ${OPENROUTER_API_KEY}`,
-                'Content-Type': 'application/json',
-                'HTTP-Referer': 'https://github.com/Yeeerniyaz/wa',
-                'X-Title': 'WhatsApp Bot'
-            },
-            body: JSON.stringify({
-                // Если первая модель перегружена (429), запрос уйдёт ко второй, и так далее. Гарантирует ответ умной ИИ.
-                models: [
-                    'meta-llama/llama-3.3-70b-instruct:free',
-                    'qwen/qwen-2.5-72b-instruct:free',
-                    'meta-llama/llama-3.1-8b-instruct:free'
-                ],
-                messages: history,
-                temperature: 0.7,
-                max_tokens: 1024,
-            })
-        });
+        const fallbackModels = [
+            'qwen/qwen-2.5-72b-instruct:free',
+            'meta-llama/llama-3.1-8b-instruct:free',
+            'google/gemma-2-9b-it:free',
+            'microsoft/phi-3-medium-128k-instruct:free'
+        ];
 
-        if (!response.ok) {
-            const errData = await response.text();
-            throw new Error(`OpenRouter API error: ${response.status} - ${errData}`);
+        let aiText = 'Кешіріңіз, түсінбедім.';
+        
+        for (const modelId of fallbackModels) {
+            try {
+                const response = await fetch('https://openrouter.ai/api/v1/chat/completions', {
+                    method: 'POST',
+                    headers: {
+                        'Authorization': `Bearer ${OPENROUTER_API_KEY}`,
+                        'Content-Type': 'application/json',
+                        'HTTP-Referer': 'https://github.com/Yeeerniyaz/wa',
+                        'X-Title': 'WhatsApp Bot'
+                    },
+                    body: JSON.stringify({
+                        model: modelId,
+                        messages: history,
+                        temperature: 0.7,
+                        max_tokens: 1024,
+                    })
+                });
+
+                if (!response.ok) {
+                    const errData = await response.text();
+                    throw new Error(errData);
+                }
+
+                const data = await response.json();
+                if (data.choices && data.choices[0]?.message?.content) {
+                    aiText = data.choices[0].message.content;
+                    break; // Успешно получили ответ - выходим из цикла
+                }
+            } catch (err) {
+                db.log(`⚠️ AI Warning (${modelId}): ${err.message}`);
+                // Продолжаем цикл для следующей модели
+            }
         }
-
-        const data = await response.json();
-        const aiText = data.choices[0]?.message?.content || 'Кешіріңіз, түсінбедім.';
 
         history.push({ role: 'assistant', content: aiText });
 
