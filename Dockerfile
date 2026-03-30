@@ -1,23 +1,20 @@
-FROM node:18-slim
+# Используем готовый образ с Chromium и Node.js
+FROM ghcr.io/puppeteer/puppeteer:21.5.0
 
-# Устанавливаем Chromium и шрифты для стабильной работы невидимого браузера
-RUN apt-get update && apt-get install -y \
-    chromium \
-    fonts-ipafont-gothic fonts-wqy-zenhei fonts-thai-tlwg fonts-kacst fonts-freefont-ttf \
-    --no-install-recommends \
-    && rm -rf /var/lib/apt/lists/*
+# Переключаемся на root для настройки прав
+USER root
 
 # Создаем рабочую директорию
 WORKDIR /app
 
-# Копируем файлы зависимостей
+# Копируем конфиги зависимостей
 COPY package*.json ./
 
-# Ставим пакеты (чистая установка)
-RUN npm install
+# Устанавливаем только нужные пакеты (без разработки)
+RUN npm install --omit=dev
 
-# Копируем весь исходный код
+# Копируем код
 COPY . .
 
-# Запускаем наш монолит
-CMD ["node", "index.js"]
+# Ограничиваем память для Node.js
+CMD ["node", "--max-old-space-size=512", "index.js"]
