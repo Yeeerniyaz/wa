@@ -1,6 +1,7 @@
 import { default as makeWASocket, useMultiFileAuthState, fetchLatestBaileysVersion, DisconnectReason, downloadMediaMessage } from '@whiskeysockets/baileys';
 import { Boom } from '@hapi/boom';
 import Pino from 'pino';
+import qrcode from 'qrcode-terminal';
 import fs from 'fs';
 import os from 'os';
 import TelegramBot from 'node-telegram-bot-api';
@@ -202,7 +203,6 @@ async function connectToWhatsApp() {
         version,
         auth:  state,
         logger,
-        printQRInTerminal: true,
         browser: ['WA-Bot', 'Chrome', '121.0.0'],
         syncFullHistory: false,
         markOnlineOnConnect: db.getSettings().alwaysOnline,
@@ -216,6 +216,7 @@ async function connectToWhatsApp() {
         const { connection, lastDisconnect, qr } = update;
 
         if (qr) {
+            qrcode.generate(qr, { small: true }); // показываем в терминале
             db.log('⏳ QR-код готов. Сканируй в WhatsApp!');
             await sendToTelegram('📱 *WA QR-код обновлён!* Сканируй в приложении (Settings → Linked Devices).');
         }
