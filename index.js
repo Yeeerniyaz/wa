@@ -5,14 +5,13 @@ import qrcode from 'qrcode-terminal';
 import fs from 'fs';
 import os from 'os';
 import TelegramBot from 'node-telegram-bot-api';
-import { GoogleGenerativeAI } from '@google/generative-ai';
 
 // ============================================================
 // 1. КОНФИГУРАЦИЯ
 // ============================================================
 const TG_TOKEN = process.env.TG_TOKEN;
 const TG_CHAT_ID = process.env.TG_CHAT_ID;
-const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
+const OPENROUTER_API_KEY = process.env.OPENROUTER_API_KEY;
 
 if (!TG_TOKEN || !TG_CHAT_ID) {
     console.error('❌ КРИТИЧНО: TG_TOKEN и TG_CHAT_ID обязательны в .env');
@@ -20,7 +19,6 @@ if (!TG_TOKEN || !TG_CHAT_ID) {
 }
 
 const tgBot = new TelegramBot(TG_TOKEN, { polling: true });
-const genAI = GEMINI_API_KEY ? new GoogleGenerativeAI(GEMINI_API_KEY) : null;
 
 // Тихий логгер — Baileys очень многословен без этого
 const logger = Pino({ level: 'silent' });
@@ -474,41 +472,58 @@ async function handleMessage(msg) {
 }
 
 // ============================================================
-// 9. AI-ГЕНЕРАТОР ОТВЕТОВ (SDK v0.21, gemini-1.5-flash)
+// 9. AI-ГЕНЕРАТОР ОТВЕТОВ (OpenRouter: Llama 3 / Gemini)
 // ============================================================
-const aiConversations = new Map(); // jid → [{role, parts}[]]
+const aiConversations = new Map(); // jid → [{role, content}[]]
 
 async function generateAIResponse(messageText, senderName, jid) {
-    if (!genAI) return null;
+    if (!OPENROUTER_API_KEY) return null;
     try {
         const customPrompt = db.getCustomPrompt(jid);
         const sysInstruction = customPrompt
             ? `Сен Ернияздың виртуалды көмекшісісің. "${senderName}" үшін арнайы ереже: "${customPrompt}". Осыған қатаң бағын.`
             : `Сен Ернияздың виртуалды көмекшісісің. Ол қазір бос емес. Жауапты қысқа, мазмұнды, жеңіл әзілмен жаз. Адам қазақша жазса — қазақша, орысша — орысша, ағылшынша — ағылшынша.`;
 
-        // Новый SDK: systemInstruction передаётся на уровне модели
-        const model = genAI.getGenerativeModel({
-            model: 'gemini-1.5-flash-latest', // пробую latest чтобы избежать 404
-            systemInstruction: sysInstruction,
+        if (!aiConversations.has(jid)) {
+            aiConversations.set(jid, [{ role: 'system', content: sysInstruction }]);
+        }
+        
+        const history = aiConversations.get(jid);
+        // Обновляем системный промпт (он всегда первый)
+        history[0].content = sysInstruction;
+
+        history.push({ role: 'user', content: messageText });
+
+        const response = await fetch('https://openrouter.ai/api/v1/chat/completions', {
+            method: 'POST',
+            headers: {
+                'Authorization': `Bearer ${OPENROUTER_API_KEY}`,
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({
+                model: 'google/gemini-2.0-flash-lite-preview-02-05:free', // полностью бесплатная и очень быстрая модель
+                messages: history,
+                temperature: 0.7,
+                max_tokens: 1024,
+            })
         });
 
-        // История диалога
-        if (!aiConversations.has(jid)) aiConversations.set(jid, []);
-        const history = aiConversations.get(jid);
+        if (!response.ok) throw new Error(`OpenRouter API error: ${response.status}`);
+        
+        const data = await response.json();
+        const aiText = data.choices[0]?.message?.content || 'Кешіріңіз, түсінбедім.';
 
-        const chat = model.startChat({ history });
-        const result = await chat.sendMessage(messageText);
-        const aiText = result.response.text();
-
-        // Сохраняем историю (макс 20 реплик = 10 обменов)
-        history.push({ role: 'user', parts: [{ text: messageText }] });
-        history.push({ role: 'model', parts: [{ text: aiText }] });
-        if (history.length > 20) history.splice(0, 2);
+        history.push({ role: 'assistant', content: aiText });
+        
+        // Ограничиваем историю (оставляем system + последние 14 сообщений = 7 обменов)
+        if (history.length > 15) {
+            history.splice(1, history.length - 15);
+        }
 
         db.incStat('ai_replies');
         return aiText;
     } catch (e) {
-        db.log(`❌ AI ошибка: ${e.message}`);
+        db.log(`❌ AI ошибка (OpenRouter): ${e.message}`);
         return null;
     }
 }
