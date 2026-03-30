@@ -170,7 +170,7 @@ async function handleMessage(msg) {
             const activePrompt = personalPrompt || settings.globalAIPrompt || null;
             
             if (activePrompt) {
-                const aiText = await generateAIResponse(pushName, activePrompt);
+                const aiText = await generateAIResponse(text, pushName, activePrompt);
                 if (aiText) {
                     await reply({ text: `🤖 ${aiText}` });
                     autoReplied = true;
