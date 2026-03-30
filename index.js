@@ -92,7 +92,7 @@ const db = new LocalDB('./database.json');
 const client = new Client({
     authStrategy: new LocalAuth(),
     puppeteer: {
-        executablePath: '/usr/bin/chromium',
+        executablePath: '/usr/bin/google-chrome-stable',
         args: [
             // Хардкорная оптимизация памяти и процессов
             '--no-sandbox', 
