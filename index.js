@@ -377,25 +377,33 @@ async function handleMessage(msg) {
 
         let autoReplied = false;
 
+        if (!canAutoReply(jid)) {
+            // Кулдаун не вышел — не отвечаем
+        }
         // Приоритет 1: Фиксированный кастомный ответ
-        const customReply = db.getCustomReply(jid);
-        if (customReply && canAutoReply(jid)) {
-            await enqueueWA(() => sock.sendMessage(jid, { text: customReply }, { quoted: msg }));
+        else if (db.getCustomReply(jid)) {
+            await enqueueWA(() => sock.sendMessage(jid, { text: db.getCustomReply(jid) }, { quoted: msg }));
             autoReplied = true;
             db.log(`🎯 Кастомный ответ → ${pushName}`);
             db.incStat('custom_replies');
         }
-        // Приоритет 2: AI-ответ (только текстовые)
-        else if (settings.aiEnabled && !mediaType && text && canAutoReply(jid)) {
+        // Приоритет 2: AI-ответ (если включён)
+        else if (settings.aiEnabled && !mediaType && text) {
             const aiText = await generateAIResponse(text, pushName, jid);
             if (aiText) {
                 await enqueueWA(() => sock.sendMessage(jid, { text: `🤖 ${aiText}` }, { quoted: msg }));
                 autoReplied = true;
                 db.log(`🤖 AI ответил → ${pushName}`);
+            } else if (settings.autoReplyUrgent) {
+                // AI вернул null — фолбэк на базовый ответ
+                await enqueueWA(() => sock.sendMessage(jid, { text: settings.defaultAutoReply }, { quoted: msg }));
+                autoReplied = true;
+                db.log(`💬 AI сбой → базовый ответ → ${pushName}`);
+                db.incStat('auto_replies');
             }
         }
-        // Приоритет 3: Базовый авто-ответ на ЛЮБОЕ сообщение (с кулдауном)
-        else if (settings.autoReplyUrgent && canAutoReply(jid)) {
+        // Приоритет 3: Базовый авто-ответ на ЛЮБОЕ сообщение
+        else if (settings.autoReplyUrgent) {
             await enqueueWA(() => sock.sendMessage(jid, { text: settings.defaultAutoReply }, { quoted: msg }));
             autoReplied = true;
             db.log(`💬 Базовый авто-ответ → ${pushName}`);
@@ -458,7 +466,7 @@ async function generateAIResponse(messageText, senderName, jid) {
 
         // Новый SDK: systemInstruction передаётся на уровне модели
         const model = genAI.getGenerativeModel({
-            model: 'gemini-1.5-flash',
+            model: 'gemini-2.0-flash-lite',
             systemInstruction: sysInstruction,
         });
 
