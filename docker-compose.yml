@@ -2,8 +2,8 @@ version: '3.8'
 
 services:
   wa-bot:
-    image: wa-online-local:latest 
-    container_name: wa-always-online
+    build: .
+    container_name: wa-baileys
     restart: unless-stopped
     environment:
       - TG_TOKEN=${TG_TOKEN}
@@ -12,10 +12,12 @@ services:
     deploy:
       resources:
         limits:
-          memory: 1G # Контейнер умрет, но не съест больше 1 ГБ
+          memory: 256M   # Baileys без Chrome — достаточно 256MB
         reservations:
-          memory: 256M
+          memory: 64M
     volumes:
-      - /opt/wa_bot/session:/app/.wwebjs_auth
+      - /opt/wa_bot/auth_info:/app/auth_info       # Baileys-сессия
       - /opt/wa_bot/database.json:/app/database.json
       - /opt/wa_bot/bot.log:/app/bot.log
+    stdin_open: true   # для первоначального QR-кода
+    tty: true

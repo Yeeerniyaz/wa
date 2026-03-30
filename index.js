@@ -1,9 +1,8 @@
-import wwebjs from 'whatsapp-web.js';
-const { Client, LocalAuth, MessageMedia } = wwebjs;
-import qrcode from 'qrcode-terminal';
+import { default as makeWASocket, useMultiFileAuthState, fetchLatestBaileysVersion, DisconnectReason, downloadMediaMessage } from '@whiskeysockets/baileys';
+import { Boom } from '@hapi/boom';
+import Pino from 'pino';
 import fs from 'fs';
 import os from 'os';
-import path from 'path';
 import TelegramBot from 'node-telegram-bot-api';
 import { GoogleGenerativeAI } from '@google/generative-ai';
 
@@ -22,6 +21,9 @@ if (!TG_TOKEN || !TG_CHAT_ID) {
 const tgBot = new TelegramBot(TG_TOKEN, { polling: true });
 const genAI = GEMINI_API_KEY ? new GoogleGenerativeAI(GEMINI_API_KEY) : null;
 
+// Тихий логгер — Baileys очень многословен без этого
+const logger = Pino({ level: 'silent' });
+
 // ============================================================
 // 2. БАЗА ДАННЫХ (IN-MEMORY + ПЕРИОДИЧЕСКАЯ ЗАПИСЬ НА ДИСК)
 // ============================================================
@@ -32,7 +34,7 @@ const DEFAULT_SETTINGS = {
     aiEnabled:         false,
     defaultAutoReply:  'Ернияз қазір бос емес. Кейінірек жазады.',
     antiSpam:          true,
-    antiSpamCooldown:  60,   // секунд между повторными авто-ответами одному пользователю
+    antiSpamCooldown:  60,
 };
 
 class LocalDB {
@@ -41,26 +43,23 @@ class LocalDB {
         this.data = this._init();
         this._dirty = false;
 
-        // Сохраняем только если данные менялись (избегаем лишних I/O)
         setInterval(() => { if (this._dirty) { this._saveToDisk(); this._dirty = false; } }, 120_000);
-
-        // Принудительное сохранение при выходе
         process.on('SIGINT',  () => { this._saveToDisk(); process.exit(); });
         process.on('SIGTERM', () => { this._saveToDisk(); process.exit(); });
     }
 
     _init() {
         if (!fs.existsSync(this.file)) {
-            const d = { logs: [], messages: [], customReplies: {}, customAIPrompts: {}, stats: {}, settings: DEFAULT_SETTINGS };
+            const d = { logs: [], customReplies: {}, customAIPrompts: {}, stats: {}, contacts: {}, settings: DEFAULT_SETTINGS };
             fs.writeFileSync(this.file, JSON.stringify(d, null, 2));
             return d;
         }
         const d = JSON.parse(fs.readFileSync(this.file, 'utf8'));
-        // Миграция: добавляем недостающие поля
-        d.settings = { ...DEFAULT_SETTINGS, ...d.settings };
-        if (!d.customReplies)  d.customReplies  = {};
-        if (!d.customAIPrompts) d.customAIPrompts = {};
-        if (!d.stats)          d.stats          = {};
+        d.settings     = { ...DEFAULT_SETTINGS, ...d.settings };
+        d.customReplies  = d.customReplies  || {};
+        d.customAIPrompts = d.customAIPrompts || {};
+        d.stats         = d.stats         || {};
+        d.contacts      = d.contacts      || {};
         return d;
     }
 
@@ -82,26 +81,37 @@ class LocalDB {
         this._dirty = true;
     }
 
-    // Настройки
     getSettings()           { return this.data.settings; }
     toggleSetting(k)        { this.data.settings[k] = !this.data.settings[k]; this._dirty = true; return this.data.settings; }
     setSetting(k, v)        { this.data.settings[k] = v; this._dirty = true; }
 
-    // Кастомные ответы
     setCustomReply(n, t)    { this.data.customReplies[n] = t; this._dirty = true; }
     deleteCustomReply(n)    { delete this.data.customReplies[n]; this._dirty = true; }
-    getCustomReply(waId)    { return this.data.customReplies[waId.replace('@c.us', '')] || null; }
+    getCustomReply(jid)     { return this.data.customReplies[toNum(jid)] || null; }
 
-    // AI-промпты
     setCustomPrompt(n, t)   { this.data.customAIPrompts[n] = t; this._dirty = true; }
     deleteCustomPrompt(n)   { delete this.data.customAIPrompts[n]; this._dirty = true; }
-    getCustomPrompt(waId)   { return this.data.customAIPrompts[waId.replace('@c.us', '')] || null; }
+    getCustomPrompt(jid)    { return this.data.customAIPrompts[toNum(jid)] || null; }
 
-    // Статистика
     incStat(key)            { this.data.stats[key] = (this.data.stats[key] || 0) + 1; this._dirty = true; }
     getStats()              { return this.data.stats; }
 
-    // Список всех кастомных ответов
+    trackContact(jid, name, lastMsg) {
+        const num = toNum(jid);
+        const now = new Date().toLocaleString('ru-RU', { timeZone: 'Asia/Almaty' });
+        if (!this.data.contacts[num]) {
+            this.data.contacts[num] = { name, count: 0, firstSeen: now, lastSeen: now, lastMsg: '' };
+        }
+        const c = this.data.contacts[num];
+        c.count++;
+        c.lastSeen = now;
+        c.lastMsg  = lastMsg ? lastMsg.slice(0, 100) : '';
+        if (name && name !== num) c.name = name;
+        this._dirty = true;
+    }
+    getContact(num)         { return this.data.contacts[num.replace(/\D/g, '')] || null; }
+    getAllContacts()         { return this.data.contacts; }
+
     listCustomReplies()     { return this.data.customReplies; }
     listCustomPrompts()     { return this.data.customAIPrompts; }
 }
@@ -109,22 +119,57 @@ class LocalDB {
 const db = new LocalDB('./database.json');
 
 // ============================================================
-// 3. ANTI-SPAM: не отвечать одному и тому же контакту часто
+// 3. ХЕЛПЕРЫ JID
 // ============================================================
-const repliedRecently = new Map(); // waId → timestamp
+// Baileys использует @s.whatsapp.net (личные) и @g.us (группы)
+const toWAJid = (num) => `${num.replace(/\D/g, '')}@s.whatsapp.net`;
+const toNum   = (jid) => (jid || '').replace(/@.+$/, '');
+const isGroup = (jid) => (jid || '').includes('@g.us');
 
-function canAutoReply(waId) {
+// Извлечение текста из Baileys-сообщения
+function getMsgText(msg) {
+    const m = msg.message;
+    if (!m) return '';
+    return (
+        m.conversation                    ||
+        m.extendedTextMessage?.text        ||
+        m.imageMessage?.caption            ||
+        m.videoMessage?.caption            ||
+        m.documentMessage?.caption         ||
+        m.buttonsResponseMessage?.selectedDisplayText ||
+        m.listResponseMessage?.title       ||
+        ''
+    );
+}
+
+// Тип медиа
+function getMsgMediaType(msg) {
+    const m = msg.message;
+    if (!m) return null;
+    if (m.imageMessage)    return 'image';
+    if (m.videoMessage)    return 'video';
+    if (m.audioMessage || m.voiceMessage) return 'audio';
+    if (m.stickerMessage)  return 'sticker';
+    if (m.documentMessage) return 'document';
+    return null;
+}
+
+// ============================================================
+// 4. ANTI-SPAM
+// ============================================================
+const repliedRecently = new Map();
+
+function canAutoReply(jid) {
     const s = db.getSettings();
     if (!s.antiSpam) return true;
-    const last = repliedRecently.get(waId) || 0;
-    const cooldown = (s.antiSpamCooldown || 60) * 1000;
-    if (Date.now() - last < cooldown) return false;
-    repliedRecently.set(waId, Date.now());
+    const last = repliedRecently.get(jid) || 0;
+    if (Date.now() - last < (s.antiSpamCooldown || 60) * 1000) return false;
+    repliedRecently.set(jid, Date.now());
     return true;
 }
 
 // ============================================================
-// 4. ОЧЕРЕДЬ ИСХОДЯЩИХ СООБЩЕНИЙ WA (анти-бан + rate limit)
+// 5. ОЧЕРЕДЬ ИСХОДЯЩИХ WA (анти-бан rate limit)
 // ============================================================
 const waQueue = [];
 let queueRunning = false;
@@ -141,70 +186,278 @@ async function processQueue() {
     queueRunning = true;
     const { fn, resolve, reject } = waQueue.shift();
     try { resolve(await fn()); } catch (e) { reject(e); }
-    // Задержка 800ms между исходящими — избегаем бана WA
     setTimeout(processQueue, 800);
 }
 
 // ============================================================
-// 5. WHATSAPP КЛИЕНТ
+// 6. WA-СОКЕТ (Baileys) — создаётся при каждом подключении
 // ============================================================
-const client = new Client({
-    authStrategy: new LocalAuth(),
-    puppeteer: {
-        executablePath: '/usr/bin/google-chrome-stable',
-        args: [
-            '--no-sandbox',
-            '--disable-setuid-sandbox',
-            '--disable-dev-shm-usage',
-            '--disable-gpu',
-            '--no-first-run',
-            '--no-zygote',
-            '--disable-background-networking',
-            '--disable-default-apps',
-            '--disable-extensions',
-            '--disable-sync',
-            '--disable-translate',
-            '--hide-scrollbars',
-            '--metrics-recording-only',
-            '--mute-audio',
-            '--safebrowsing-disable-auto-update',
-            '--js-flags=--max-old-space-size=512',
-        ],
-    },
-});
+let sock = null;
+
+async function connectToWhatsApp() {
+    const { state, saveCreds } = await useMultiFileAuthState('./auth_info');
+    const { version } = await fetchLatestBaileysVersion();
+
+    sock = makeWASocket({
+        version,
+        auth:  state,
+        logger,
+        printQRInTerminal: true,
+        browser: ['WA-Bot', 'Chrome', '121.0.0'],
+        syncFullHistory: false,
+        markOnlineOnConnect: db.getSettings().alwaysOnline,
+    });
+
+    // Сохраняем учётные данные при каждом обновлении
+    sock.ev.on('creds.update', saveCreds);
+
+    // Состояние подключения
+    sock.ev.on('connection.update', async (update) => {
+        const { connection, lastDisconnect, qr } = update;
+
+        if (qr) {
+            db.log('⏳ QR-код готов. Сканируй в WhatsApp!');
+            await sendToTelegram('📱 *WA QR-код обновлён!* Сканируй в приложении (Settings → Linked Devices).');
+        }
+
+        if (connection === 'open') {
+            db.log('🚀 WhatsApp подключён (Baileys)!');
+            await sendToTelegram('🚀 *WhatsApp подключён!*\nBaileys • без браузера • RAM: ~50MB');
+
+            // Поддержка онлайн-статуса
+            if (db.getSettings().alwaysOnline) {
+                setInterval(async () => {
+                    if (db.getSettings().alwaysOnline) {
+                        try { await sock.sendPresenceUpdate('available'); } catch (_) {}
+                    }
+                }, 45_000);
+            }
+        }
+
+        if (connection === 'close') {
+            const code = new Boom(lastDisconnect?.error)?.output?.statusCode;
+            const loggedOut = code === DisconnectReason.loggedOut;
+            db.log(`⚠️ WA отключился (код: ${code})`);
+
+            if (loggedOut) {
+                await sendToTelegram('🔑 *WA: Требуется повторная авторизация!* Удали папку `auth_info` и перезапусти бота.');
+                db.log('❌ Выход из аккаунта. Перезапуск невозможен без нового QR.');
+            } else {
+                await sendToTelegram(`⚠️ *WA отключился!* Переподключение через 5 сек...`);
+                setTimeout(connectToWhatsApp, 5_000);
+            }
+        }
+    });
+
+    // ============================================================
+    // 7. ВХОДЯЩИЕ СООБЩЕНИЯ
+    // ============================================================
+    sock.ev.on('messages.upsert', async ({ messages, type }) => {
+        if (type !== 'notify') return;
+
+        for (const msg of messages) {
+            try {
+                await handleMessage(msg);
+            } catch (err) {
+                db.log(`❌ Ошибка обработки сообщения: ${err.message}`);
+            }
+        }
+    });
+}
 
 // ============================================================
-// 6. ГЕНЕРАТОР AI-ОТВЕТОВ (gemini-1.5-flash — быстрее и дешевле)
+// 8. ОБРАБОТЧИК ВХОДЯЩИХ WA-СООБЩЕНИЙ
 // ============================================================
-const aiConversations = new Map(); // waId → [{role, parts}[]]
+async function handleMessage(msg) {
+    if (!msg.message) return;
+    if (msg.key.fromMe)   return; // Игнорируем свои сообщения
 
-async function generateAIResponse(messageText, senderName, waId) {
+    const jid      = msg.key.remoteJid;
+    const text     = getMsgText(msg);
+    const textLow  = text.toLowerCase();
+    const mediaType = getMsgMediaType(msg);
+    const settings = db.getSettings();
+    const pushName = msg.pushName || toNum(jid);
+
+    db.incStat('messages_received');
+
+    // Хелпер для ответа в WA
+    const reply = (content) => enqueueWA(() => sock.sendMessage(jid, content, { quoted: msg }));
+
+    // ---- КОМАНДЫ (работают и в личке, и в группах) ----
+
+    if (textLow === '!ping') {
+        await reply({ text: '🤖 *Pong!* Жүйе жұмыс істеп тұр.' });
+        return;
+    }
+
+    if (textLow === '!help') {
+        await reply({ text:
+            '🤖 *Бот командалары:*\n' +
+            '`!ping` — тексеру\n' +
+            '`!ескерт [мин] [мәтін]` — еске салу\n' +
+            '`!тамақ [г]` — инсулин есептеу\n' +
+            '`!анализ` — қан тапсыру ескертуі\n' +
+            '`!үй` — смарт үй күйі\n' +
+            '`!ауа` — ауа райы\n' +
+            '`!id` — сіздің WA ID'
+        });
+        return;
+    }
+
+    if (textLow === '!id') {
+        await reply({ text: `🔑 Сіздің WA ID:\n\`${jid}\`` });
+        return;
+    }
+
+    // Еске салу
+    if (textLow.startsWith('!ескерт ') || textLow.startsWith('!напомни ')) {
+        const parts   = text.split(' ');
+        const minutes = parseInt(parts[1], 10);
+        const remind  = parts.slice(2).join(' ');
+        if (!isNaN(minutes) && minutes > 0 && remind) {
+            await reply({ text: `⏳ *${minutes}* минуттан кейін ескертемін.` });
+            setTimeout(async () => {
+                try { await enqueueWA(() => sock.sendMessage(jid, { text: `⏰ *ЕСКЕ САЛУ:*\n${remind}` }, { quoted: msg })); } catch (_) {}
+            }, minutes * 60_000);
+        } else {
+            await reply({ text: '⚠️ Формат: `!ескерт 15 сүт алу`' });
+        }
+        return;
+    }
+
+    // Инсулин калькуляторы
+    if (textLow.startsWith('!тамақ') || textLow.startsWith('!еда')) {
+        const carbs = parseInt(textLow.replace(/[^\d]/g, ''), 10);
+        if (!isNaN(carbs) && carbs > 0) {
+            const insulin = (carbs / 10).toFixed(1);
+            await reply({ text:
+                `🍽️ *Инсулин калькуляторы:*\n` +
+                `Көмірсулар: *${carbs}г*\n` +
+                `💉 Инсулин: *${insulin} бірлік*\n` +
+                `_Дәрігермен ақылдасыңыз!_`
+            });
+        } else {
+            await reply({ text: '⚠️ Формат: `!тамақ 60` (көмірсу граммы)' });
+        }
+        return;
+    }
+
+    if (textLow === '!анализ') {
+        await reply({ text: '🩺 *Еске салу:* Қанды және HbA1c мерзімді тексеруді ұмытпа!' });
+        return;
+    }
+
+    if (textLow === '!үй' || textLow === '!дом' || textLow === '!home') {
+        await reply({ text: '🏠 *VECTOR Smart Home*\n✅ Барлық жүйелер қалыпты.' });
+        return;
+    }
+
+    if (textLow === '!ауа' || textLow === '!погода') {
+        await reply({ text: '🌤️ Ауа райы әзірге қолжетімді емес. OpenWeather API қос.' });
+        return;
+    }
+
+    // ---- ЛИЧНЫЕ СООБЩЕНИЯ: автоответы + форвард в TG ----
+    if (!isGroup(jid)) {
+        // Трекинг
+        db.trackContact(jid, pushName, mediaType ? `[${mediaType}]` : text);
+
+        let autoReplied = false;
+
+        // Приоритет 1: Фиксированный ответ
+        const customReply = db.getCustomReply(jid);
+        if (customReply && canAutoReply(jid)) {
+            await enqueueWA(() => sock.sendMessage(jid, { text: customReply }, { quoted: msg }));
+            autoReplied = true;
+            db.log(`🎯 Кастомный ответ → ${pushName}`);
+            db.incStat('custom_replies');
+        }
+        // Приоритет 2: AI
+        else if (settings.aiEnabled && !mediaType && canAutoReply(jid)) {
+            const aiText = await generateAIResponse(text, pushName, jid);
+            if (aiText) {
+                await enqueueWA(() => sock.sendMessage(jid, { text: `🤖 ${aiText}` }, { quoted: msg }));
+                autoReplied = true;
+                db.log(`🤖 AI ответил → ${pushName}`);
+            }
+        }
+        // Приоритет 3: Ключевые слова
+        else if (
+            settings.autoReplyUrgent &&
+            (textLow.includes('срочно') || textLow.includes('важно') || textLow.includes('помогите') ||
+             textLow.includes('шұғыл') || textLow.includes('маңызды') || textLow.includes('көмек')) &&
+            canAutoReply(jid)
+        ) {
+            await enqueueWA(() => sock.sendMessage(jid, { text: settings.defaultAutoReply }, { quoted: msg }));
+            autoReplied = true;
+            db.log(`🚨 Автоответ (ключ. слово) → ${pushName}`);
+            db.incStat('urgent_replies');
+        }
+
+        // ---- Пересылка в Telegram ----
+        let tgText = `💬 *От:* ${pushName} \`(${jid})\`\n`;
+        if (autoReplied) tgText += `🤖 _(Ответ отправлен)_\n`;
+        tgText += '\n';
+
+        if (mediaType && settings.forwardMedia) {
+            try {
+                const buffer = await downloadMediaMessage(msg, 'buffer', {}, { logger, reuploadRequest: sock.updateMediaMessage });
+                const caption = `${tgText}📎 _[${mediaType}]_\n${text || ''}\n\n\`WA_ID: ${jid}\`\n_↩️ Ответь на это сообщение_`;
+
+                if      (mediaType === 'image')    await tgBot.sendPhoto(TG_CHAT_ID, buffer, { caption, parse_mode: 'Markdown' });
+                else if (mediaType === 'video')    await tgBot.sendVideo(TG_CHAT_ID, buffer, { caption, parse_mode: 'Markdown' });
+                else if (mediaType === 'audio')    await tgBot.sendVoice(TG_CHAT_ID, buffer, { caption, parse_mode: 'Markdown' });
+                else if (mediaType === 'sticker')  await tgBot.sendSticker(TG_CHAT_ID, buffer);
+                else                               await tgBot.sendDocument(TG_CHAT_ID, buffer, { caption, parse_mode: 'Markdown' });
+
+                db.incStat('media_forwarded');
+                return;
+            } catch (e) {
+                tgText += `📎 _[${mediaType}: ошибка загрузки]_\n`;
+                db.log(`❌ Ошибка скачивания медиа: ${e.message}`);
+            }
+        } else if (mediaType && !settings.forwardMedia) {
+            tgText += `📁 _[${mediaType} скрыт]_\n${text}`;
+        } else {
+            tgText += text;
+        }
+
+        tgText += `\n\n---\n\`WA_ID: ${jid}\`\n_↩️ Ответь на это сообщение_`;
+        await sendToTelegram(tgText);
+    }
+}
+
+// ============================================================
+// 9. AI-ГЕНЕРАТОР ОТВЕТОВ
+// ============================================================
+const aiConversations = new Map();
+
+async function generateAIResponse(messageText, senderName, jid) {
     if (!genAI) return null;
     try {
         const model = genAI.getGenerativeModel({ model: 'gemini-pro' });
 
-        const customPrompt = db.getCustomPrompt(waId);
+        const customPrompt = db.getCustomPrompt(jid);
         const sysMsg = customPrompt
             ? `Сен Ернияздың виртуалды көмекшісісің. "${senderName}" үшін арнайы ереже бар: "${customPrompt}". Осыған қатаң бағын.`
-            : `Сен Ернияздың виртуалды көмекшісісің. Ол қазір бос емес. Жауапты қысқа, мазмұнды, жеңіл әзілмен жаз. Адам қазақша жазса — қазақша жауап бер. Адам орысша жазса — орысша жауап бер. Ағылшынша жазса — ағылшынша.`;
+            : `Сен Ернияздың виртуалды көмекшісісің. Ол қазір бос емес. Жауапты қысқа, мазмұнды, жеңіл әзілмен жаз. Адам қазақша жазса — қазақша, орысша — орысша, ағылшынша — ағылшынша.`;
 
-        // Ведём историю диалога (последние 20 реплик)
-        if (!aiConversations.has(waId)) {
-            // Первое сообщение: инструкция через user/model пинг
-            aiConversations.set(waId, [
+        if (!aiConversations.has(jid)) {
+            aiConversations.set(jid, [
                 { role: 'user',  parts: [{ text: sysMsg }] },
                 { role: 'model', parts: [{ text: 'Понял, буду следовать инструкции.' }] },
             ]);
         }
-        const history = aiConversations.get(waId);
+        const history = aiConversations.get(jid);
 
-        const chat = model.startChat({ history });
-        const result = await chat.sendMessage(messageText);
-        const aiText = result.response.text();
+        const chat    = model.startChat({ history });
+        const result  = await chat.sendMessage(messageText);
+        const aiText  = result.response.text();
 
         history.push({ role: 'user',  parts: [{ text: messageText }] });
         history.push({ role: 'model', parts: [{ text: aiText }] });
-        if (history.length > 22) history.splice(2, 2); // убираем старые, но сохраняем системный пинг
+        if (history.length > 22) history.splice(2, 2);
 
         db.incStat('ai_replies');
         return aiText;
@@ -215,13 +468,13 @@ async function generateAIResponse(messageText, senderName, waId) {
 }
 
 // ============================================================
-// 7. TELEGRAM → WHATSAPP МОСТ (полная поддержка медиа)
+// 10. TELEGRAM → WHATSAPP МОСТ
 // ============================================================
 const sendToTelegram = async (text, extra = {}) => {
     try {
         await tgBot.sendMessage(TG_CHAT_ID, text, { parse_mode: 'Markdown', ...extra });
     } catch (err) {
-        console.error('❌ Ошибка TG send:', err.message);
+        console.error('❌ TG ошибка:', err.message);
     }
 };
 
@@ -229,52 +482,51 @@ const getSettingsKeyboard = (s) => ({
     reply_markup: {
         inline_keyboard: [
             [
-                { text: `${s.alwaysOnline      ? '🟢' : '⚫'} Онлайн`,       callback_data: 'toggle_alwaysOnline' },
-                { text: `${s.aiEnabled         ? '🤖' : '⚫'} AI-Ответы`,    callback_data: 'toggle_aiEnabled' },
+                { text: `${s.alwaysOnline    ? '🟢' : '⚫'} Онлайн`,    callback_data: 'toggle_alwaysOnline' },
+                { text: `${s.aiEnabled       ? '🤖' : '⚫'} AI-Ответы`, callback_data: 'toggle_aiEnabled' },
             ],
             [
-                { text: `${s.autoReplyUrgent   ? '🚨' : '⚫'} Автоответ`,     callback_data: 'toggle_autoReplyUrgent' },
-                { text: `${s.forwardMedia      ? '🖼️' : '⚫'} Медиа`,         callback_data: 'toggle_forwardMedia' },
+                { text: `${s.autoReplyUrgent ? '🚨' : '⚫'} Автоответ`, callback_data: 'toggle_autoReplyUrgent' },
+                { text: `${s.forwardMedia    ? '🖼️' : '⚫'} Медиа`,     callback_data: 'toggle_forwardMedia' },
             ],
             [
-                { text: `${s.antiSpam          ? '🛡️' : '⚫'} Антиспам`,      callback_data: 'toggle_antiSpam' },
-                { text: '📊 Статус',                                           callback_data: 'sys_status' },
+                { text: `${s.antiSpam        ? '🛡️' : '⚫'} Антиспам`,  callback_data: 'toggle_antiSpam' },
+                { text: '📊 Статус',                                      callback_data: 'sys_status' },
             ],
             [
-                { text: '📋 Кастомные ответы',                                 callback_data: 'list_replies' },
-                { text: '🧠 AI-промпты',                                        callback_data: 'list_prompts' },
+                { text: '📋 Кастомные ответы', callback_data: 'list_replies' },
+                { text: '🧠 AI-промпты',       callback_data: 'list_prompts' },
             ],
             [
-                { text: '📈 Статистика',                                        callback_data: 'show_stats' },
-                { text: '📜 Логи (30)',                                         callback_data: 'show_logs' },
+                { text: '📈 Статистика',        callback_data: 'show_stats' },
+                { text: '📜 Логи (30)',          callback_data: 'show_logs' },
             ],
         ],
     },
 });
 
 // ============================================================
-// 8. TELEGRAM КОМАНДЫ
+// 11. TELEGRAM КОМАНДЫ
 // ============================================================
 tgBot.on('message', async (tgMsg) => {
     if (tgMsg.chat.id.toString() !== TG_CHAT_ID) return;
-    const text = tgMsg.text || '';
+    const text     = tgMsg.text || '';
     const settings = db.getSettings();
 
-    // --- /start | /menu ---
     if (text === '/start' || text === '/menu') {
         const helpText =
             `⚙️ *Управление WA-Ботом*\n\n` +
-            `*📤 Отправить сообщение:*\n\`/send 77012345678 текст\`\n\n` +
+            `*📤 Отправить:*\n\`/send 77012345678 текст\`\n\n` +
             `*📌 Кастомные ответы:*\n\`/setreply 77012345678 текст\`\n\`/delreply 77012345678\`\n\n` +
             `*🧠 AI-инструкции:*\n\`/setprompt 77012345678 инструкция\`\n\`/delprompt 77012345678\`\n\n` +
             `*💬 Базовый автоответ:*\n\`/setdefault текст\`\n\n` +
-            `*⏱️ Антиспам-кулдаун:*\n\`/setcooldown 60\` (в секундах)\n\n` +
-            `*🗑️ Сбросить историю AI:*\n\`/resetai 77012345678\``;
+            `*⏱️ Антиспам:*\n\`/setcooldown 60\`\n\n` +
+            `*🗑️ Сбросить AI:*\n\`/resetai 77012345678\`\n\n` +
+            `*👤 Статистика:*\n\`/stat 77012345678\`\n\`/top\` — топ-10`;
         await tgBot.sendMessage(TG_CHAT_ID, helpText, { parse_mode: 'Markdown', ...getSettingsKeyboard(settings) });
         return;
     }
 
-    // --- /setdefault ---
     if (text.startsWith('/setdefault ')) {
         db.setSetting('defaultAutoReply', text.slice('/setdefault '.length));
         db.forceSave();
@@ -282,36 +534,26 @@ tgBot.on('message', async (tgMsg) => {
         return;
     }
 
-    // --- /setreply ---
     if (text.startsWith('/setreply ')) {
         const m = text.match(/^\/setreply\s+(\d+)\s+(.+)$/s);
-        if (m) {
-            db.setCustomReply(m[1], m[2]);
-            db.forceSave();
-            await sendToTelegram(`✅ Фиксированный ответ для *+${m[1]}* установлен:\n_${m[2]}_`);
-        } else {
-            await sendToTelegram('⚠️ Формат: `/setreply 77012345678 текст`');
-        }
+        if (m) { db.setCustomReply(m[1], m[2]); db.forceSave(); await sendToTelegram(`✅ Ответ для *+${m[1]}* установлен.`); }
+        else   { await sendToTelegram('⚠️ Формат: `/setreply 77012345678 текст`'); }
         return;
     }
 
-    // --- /delreply ---
     if (text.startsWith('/delreply ')) {
-        const num = text.slice('/delreply '.length).trim();
-        db.deleteCustomReply(num);
+        db.deleteCustomReply(text.slice('/delreply '.length).trim());
         db.forceSave();
-        await sendToTelegram(`🗑 Ответ для *+${num}* удалён.`);
+        await sendToTelegram('🗑 Ответ удалён.');
         return;
     }
 
-    // --- /setprompt ---
     if (text.startsWith('/setprompt ')) {
         const m = text.match(/^\/setprompt\s+(\d+)\s+(.+)$/s);
         if (m) {
             db.setCustomPrompt(m[1], m[2]);
             db.forceSave();
-            // Сбрасываем историю при новом промпте
-            aiConversations.delete(`${m[1]}@c.us`);
+            aiConversations.delete(toWAJid(m[1]));
             await sendToTelegram(`🧠 AI-инструкция для *+${m[1]}* сохранена:\n_${m[2]}_`);
         } else {
             await sendToTelegram('⚠️ Формат: `/setprompt 77012345678 Отвечай по-казахски`');
@@ -319,43 +561,73 @@ tgBot.on('message', async (tgMsg) => {
         return;
     }
 
-    // --- /delprompt ---
     if (text.startsWith('/delprompt ')) {
         const num = text.slice('/delprompt '.length).trim();
         db.deleteCustomPrompt(num);
         db.forceSave();
-        aiConversations.delete(`${num}@c.us`);
+        aiConversations.delete(toWAJid(num));
         await sendToTelegram(`🗑 AI-инструкция для *+${num}* удалена.`);
         return;
     }
 
-    // --- /setcooldown ---
     if (text.startsWith('/setcooldown ')) {
         const secs = parseInt(text.slice('/setcooldown '.length).trim(), 10);
         if (!isNaN(secs) && secs >= 0) {
             db.setSetting('antiSpamCooldown', secs);
             db.forceSave();
             await sendToTelegram(`✅ Кулдаун антиспама: *${secs} сек*`);
-        } else {
-            await sendToTelegram('⚠️ Укажи число секунд, например `/setcooldown 120`');
         }
         return;
     }
 
-    // --- /resetai ---
     if (text.startsWith('/resetai ')) {
         const num = text.slice('/resetai '.length).trim();
-        aiConversations.delete(`${num}@c.us`);
+        aiConversations.delete(toWAJid(num));
         await sendToTelegram(`🔄 История AI для *+${num}* сброшена.`);
         return;
     }
 
-    // --- /send ---
+    if (text.startsWith('/stat ')) {
+        const num = text.slice('/stat '.length).trim().replace(/\D/g, '');
+        const c = db.getContact(num);
+        if (!c) {
+            await sendToTelegram(`❓ Контакт *+${num}* не найден.`);
+        } else {
+            const hasReply  = db.getCustomReply(toWAJid(num)) ? '✅ есть' : '❌ нет';
+            const hasPrompt = db.getCustomPrompt(toWAJid(num)) ? '✅ есть' : '❌ нет';
+            await sendToTelegram(
+                `👤 *Статистика +${num}*\n` +
+                `📛 Имя: ${c.name || '—'}\n` +
+                `📨 Сообщений: *${c.count}*\n` +
+                `🕐 Первый раз: ${c.firstSeen}\n` +
+                `🕑 Последний раз: ${c.lastSeen}\n` +
+                `💬 Последнее:\n_${c.lastMsg || '—'}_\n\n` +
+                `📌 Кастомный ответ: ${hasReply}\n` +
+                `🧠 AI-инструкция: ${hasPrompt}`
+            );
+        }
+        return;
+    }
+
+    if (text === '/top') {
+        const contacts = db.getAllContacts();
+        const sorted = Object.entries(contacts).sort(([,a],[,b]) => b.count - a.count).slice(0, 10);
+        if (sorted.length === 0) {
+            await sendToTelegram('📭 Пока нет данных.');
+        } else {
+            const lines = sorted.map(([num, c], i) =>
+                `${i+1}. *${c.name || '+'+num}* — ${c.count} сообщ.\n   _${c.lastSeen}_`
+            );
+            await sendToTelegram(`📊 *Топ-${sorted.length} контактов:*\n\n` + lines.join('\n\n'));
+        }
+        return;
+    }
+
     if (text.startsWith('/send ')) {
         const m = text.match(/^\/send\s+(\d+)\s+(.+)$/s);
         if (m) {
             try {
-                await enqueueWA(() => client.sendMessage(`${m[1]}@c.us`, m[2]));
+                await enqueueWA(() => sock.sendMessage(toWAJid(m[1]), { text: m[2] }));
                 await sendToTelegram(`✅ Отправлено на *+${m[1]}*`);
                 db.incStat('manual_sends');
             } catch (e) {
@@ -365,51 +637,49 @@ tgBot.on('message', async (tgMsg) => {
         return;
     }
 
-    // --- Ответ на форвардное сообщение (мост TG → WA) ---
+    // ---- Мост TG → WA (ответ на форвардное сообщение) ----
     if (tgMsg.reply_to_message) {
         const refText = tgMsg.reply_to_message.text || tgMsg.reply_to_message.caption || '';
-        const waMatch = refText.match(/WA_ID:\s*([0-9]+@c\.us)/);
+        const waMatch = refText.match(/WA_ID:\s*([0-9]+@s\.whatsapp\.net)/);
         if (waMatch) {
-            const waId = waMatch[1];
+            const waJid = waMatch[1];
             try {
                 if (tgMsg.photo) {
                     const fileId   = tgMsg.photo[tgMsg.photo.length - 1].file_id;
                     const fileLink = await tgBot.getFileLink(fileId);
-                    const media    = await MessageMedia.fromUrl(fileLink, { unsafeMime: true });
-                    await enqueueWA(() => client.sendMessage(waId, media, { caption: tgMsg.caption || '' }));
+                    const res      = await fetch(fileLink);
+                    const buffer   = Buffer.from(await res.arrayBuffer());
+                    await enqueueWA(() => sock.sendMessage(waJid, { image: buffer, caption: tgMsg.caption || '' }));
                 } else if (tgMsg.video) {
                     const fileLink = await tgBot.getFileLink(tgMsg.video.file_id);
-                    const media    = await MessageMedia.fromUrl(fileLink, { unsafeMime: true });
-                    await enqueueWA(() => client.sendMessage(waId, media, { caption: tgMsg.caption || '' }));
+                    const res      = await fetch(fileLink);
+                    const buffer   = Buffer.from(await res.arrayBuffer());
+                    await enqueueWA(() => sock.sendMessage(waJid, { video: buffer, caption: tgMsg.caption || '' }));
                 } else if (tgMsg.document) {
                     const fileLink = await tgBot.getFileLink(tgMsg.document.file_id);
-                    const media    = await MessageMedia.fromUrl(fileLink, { unsafeMime: true });
-                    await enqueueWA(() => client.sendMessage(waId, media));
+                    const res      = await fetch(fileLink);
+                    const buffer   = Buffer.from(await res.arrayBuffer());
+                    await enqueueWA(() => sock.sendMessage(waJid, { document: buffer, mimetype: tgMsg.document.mime_type, fileName: tgMsg.document.file_name || 'file' }));
                 } else if (tgMsg.voice || tgMsg.audio) {
                     const fileId   = (tgMsg.voice || tgMsg.audio).file_id;
                     const fileLink = await tgBot.getFileLink(fileId);
-                    const media    = await MessageMedia.fromUrl(fileLink, { unsafeMime: true });
-                    await enqueueWA(() => client.sendMessage(waId, media));
-                } else if (tgMsg.sticker) {
-                    const fileLink = await tgBot.getFileLink(tgMsg.sticker.file_id);
-                    const media    = await MessageMedia.fromUrl(fileLink, { unsafeMime: true });
-                    await enqueueWA(() => client.sendMessage(waId, media));
+                    const res      = await fetch(fileLink);
+                    const buffer   = Buffer.from(await res.arrayBuffer());
+                    await enqueueWA(() => sock.sendMessage(waJid, { audio: buffer, mimetype: 'audio/ogg; codecs=opus', ptt: true }));
                 } else if (tgMsg.text) {
-                    await enqueueWA(() => client.sendMessage(waId, tgMsg.text));
+                    await enqueueWA(() => sock.sendMessage(waJid, { text: tgMsg.text }));
                 }
                 await tgBot.sendMessage(TG_CHAT_ID, '✅ Доставлено в WA', { reply_to_message_id: tgMsg.message_id });
                 db.incStat('bridge_sends');
-                db.log(`✅ Мост TG→WA (${waId})`);
             } catch (err) {
                 await tgBot.sendMessage(TG_CHAT_ID, `❌ Ошибка моста: ${err.message}`, { reply_to_message_id: tgMsg.message_id });
-                db.log(`❌ Мост TG→WA ошибка: ${err.message}`);
             }
         }
     }
 });
 
 // ============================================================
-// 9. TELEGRAM CALLBACK (кнопки)
+// 12. TELEGRAM CALLBACK (кнопки)
 // ============================================================
 tgBot.on('callback_query', async (query) => {
     if (query.message.chat.id.toString() !== TG_CHAT_ID) return;
@@ -430,55 +700,42 @@ tgBot.on('callback_query', async (query) => {
     }
 
     else if (action === 'sys_status') {
-        const freeRAM    = Math.round(os.freemem() / 1024 / 1024);
-        const totalRAM   = Math.round(os.totalmem() / 1024 / 1024);
-        const scriptRAM  = Math.round(process.memoryUsage().rss / 1024 / 1024);
-        const heapUsed   = Math.round(process.memoryUsage().heapUsed / 1024 / 1024);
-        const uptime     = process.uptime();
-        const uptimeStr  = `${Math.floor(uptime/3600)}ч ${Math.floor((uptime%3600)/60)}м`;
-        const cpuLoad    = os.loadavg()[0].toFixed(2);
-        const queueLen   = waQueue.length;
+        const freeRAM   = Math.round(os.freemem() / 1024 / 1024);
+        const totalRAM  = Math.round(os.totalmem() / 1024 / 1024);
+        const scriptRAM = Math.round(process.memoryUsage().rss / 1024 / 1024);
+        const heapUsed  = Math.round(process.memoryUsage().heapUsed / 1024 / 1024);
+        const uptime    = process.uptime();
+        const uptimeStr = `${Math.floor(uptime/3600)}ч ${Math.floor((uptime%3600)/60)}м`;
         const stats = [
-            `💻 *Статус Системы*`,
+            `💻 *Статус (Baileys)*`,
             `🧠 RAM хоста: ${freeRAM}MB / ${totalRAM}MB`,
             `📦 RAM скрипта: ${scriptRAM}MB (heap: ${heapUsed}MB)`,
-            `🔥 CPU Load (1m): ${cpuLoad}`,
-            `⏱ Uptime бота: ${uptimeStr}`,
-            `📬 Очередь WA: ${queueLen} msg`,
-            `🗓 Сервер: ${os.hostname()} / ${os.platform()}`,
+            `🔥 CPU: ${os.loadavg()[0].toFixed(2)}`,
+            `⏱ Uptime: ${uptimeStr}`,
+            `📬 Очередь: ${waQueue.length} msg`,
         ].join('\n');
         await tgBot.answerCallbackQuery(query.id, { text: stats, show_alert: true });
     }
 
     else if (action === 'list_replies') {
-        const replies = db.listCustomReplies();
-        const keys = Object.keys(replies);
-        if (keys.length === 0) {
-            await tgBot.answerCallbackQuery(query.id, { text: 'Нет кастомных ответов', show_alert: true });
-        } else {
-            const txt = '📋 *Кастомные ответы:*\n' + keys.map(k => `+${k}: _${replies[k].slice(0,40)}_`).join('\n');
-            await sendToTelegram(txt);
-            await tgBot.answerCallbackQuery(query.id);
-        }
+        const r = db.listCustomReplies();
+        const keys = Object.keys(r);
+        if (!keys.length) { await tgBot.answerCallbackQuery(query.id, { text: 'Нет кастомных ответов', show_alert: true }); }
+        else { await sendToTelegram('📋 *Кастомные ответы:*\n' + keys.map(k=>`+${k}: _${r[k].slice(0,40)}_`).join('\n')); await tgBot.answerCallbackQuery(query.id); }
     }
 
     else if (action === 'list_prompts') {
-        const prompts = db.listCustomPrompts();
-        const keys = Object.keys(prompts);
-        if (keys.length === 0) {
-            await tgBot.answerCallbackQuery(query.id, { text: 'Нет AI-инструкций', show_alert: true });
-        } else {
-            const txt = '🧠 *AI-инструкции:*\n' + keys.map(k => `+${k}: _${prompts[k].slice(0,60)}_`).join('\n');
-            await sendToTelegram(txt);
-            await tgBot.answerCallbackQuery(query.id);
-        }
+        const p = db.listCustomPrompts();
+        const keys = Object.keys(p);
+        if (!keys.length) { await tgBot.answerCallbackQuery(query.id, { text: 'Нет AI-инструкций', show_alert: true }); }
+        else { await sendToTelegram('🧠 *AI-инструкции:*\n' + keys.map(k=>`+${k}: _${p[k].slice(0,60)}_`).join('\n')); await tgBot.answerCallbackQuery(query.id); }
     }
 
     else if (action === 'show_stats') {
         const s = db.getStats();
         const txt = '📈 *Статистика:*\n' + (Object.keys(s).length
             ? Object.entries(s).map(([k,v]) => `• ${k}: *${v}*`).join('\n')
-            : '_Пока нет данных_');
+            : '_Нет данных_');
         await tgBot.answerCallbackQuery(query.id, { text: txt.slice(0, 200), show_alert: true });
     }
 
@@ -490,216 +747,9 @@ tgBot.on('callback_query', async (query) => {
 });
 
 // ============================================================
-// 10. WHATSAPP: СОБЫТИЯ
+// 13. ГЛОБАЛЬНАЯ ОБРАБОТКА ОШИБОК
 // ============================================================
-client.on('qr', (qr) => {
-    qrcode.generate(qr, { small: true });
-    db.log('⏳ QR-код обновлён. Сканируй!');
-    sendToTelegram('📱 *WA QR-код обновлён!* Отсканируй в приложении.');
-});
-
-client.on('authenticated', () => db.log('🔐 WA аутентифицирован.'));
-
-client.on('auth_failure', (msg) => {
-    db.log(`❌ WA ошибка аутентификации: ${msg}`);
-    sendToTelegram(`❌ *WA ошибка аутентификации:* ${msg}`);
-});
-
-client.on('ready', () => {
-    db.log('🚀 WhatsApp подключён и готов!');
-    sendToTelegram('🚀 *WhatsApp подключён!*\nБот активен.');
-
-    // Поддержка онлайн-статуса
-    setInterval(async () => {
-        if (db.getSettings().alwaysOnline) {
-            try { await client.sendPresenceAvailable(); } catch (_) {}
-        }
-    }, 45_000);
-});
-
-client.on('disconnected', (reason) => {
-    db.log(`⚠️ WA отключился: ${reason}`);
-    sendToTelegram(`⚠️ *WA отключился!*\nПричина: ${reason}\nПерезапуск через 10 сек...`);
-    setTimeout(() => client.initialize(), 10_000);
-});
-
-// ============================================================
-// 11. WHATSAPP: ВХОДЯЩИЕ СООБЩЕНИЯ
-// ============================================================
-client.on('message', async (msg) => {
-    if (msg.isStatus) return;
-
-    const text    = msg.body || '';
-    const textLow = text.toLowerCase();
-    const isGroup = msg.from.includes('@g.us');
-    const settings = db.getSettings();
-
-    db.incStat('messages_received');
-
-    // ---- КОМАНДЫ (доступны всем, кто написал, в т.ч. группы) ----
-
-    if (textLow === '!ping') {
-        await msg.reply('🤖 *Pong!* Жүйе жұмыс істеп тұр.');
-        return;
-    }
-
-    if (textLow === '!help') {
-        await msg.reply(
-            '🤖 *Бот командалары:*\n' +
-            '`!ping` — тексеру\n' +
-            '`!ескерт [мин] [мәтін]` — еске салу\n' +
-            '`!тамақ [г]` — инсулин есептеу\n' +
-            '`!анализ` — қан тапсыру ескертуі\n' +
-            '`!үй` — смарт үй күйі\n' +
-            '`!ауа` — ауа райы\n' +
-            '`!id` — сіздің WA ID'
-        );
-        return;
-    }
-
-    if (textLow === '!id') {
-        await msg.reply(`🔑 Сіздің WA ID:\n\`${msg.from}\``);
-        return;
-    }
-
-    // Еске салу (казахский + русский)
-    if (textLow.startsWith('!ескерт ') || textLow.startsWith('!напомни ')) {
-        const parts = text.split(' ');
-        const minutes = parseInt(parts[1], 10);
-        const reminderText = parts.slice(2).join(' ');
-        if (!isNaN(minutes) && minutes > 0 && reminderText) {
-            await msg.reply(`⏳ *${minutes}* минуттан кейін ескертемін.`);
-            setTimeout(async () => {
-                try {
-                    await enqueueWA(() => msg.reply(`⏰ *ЕСКЕ САЛУ:*\n${reminderText}`));
-                } catch (_) {}
-            }, minutes * 60_000);
-        } else {
-            await msg.reply('⚠️ Формат: `!ескерт 15 сүт алу`');
-        }
-        return;
-    }
-
-    // Инсулин калькуляторы
-    if (textLow.startsWith('!тамақ') || textLow.startsWith('!еда')) {
-        const carbs = parseInt(textLow.replace(/[^\d]/g, ''), 10);
-        if (!isNaN(carbs) && carbs > 0) {
-            const insulin = (carbs / 10).toFixed(1);
-            await msg.reply(
-                `🍽️ *Инсулин калькуляторы:*\n` +
-                `Көмірсулар: *${carbs}г*\n` +
-                `💉 Инсулин: *${insulin} бірлік*\n` +
-                `_Дәрігермен ақылдасыңыз!_`
-            );
-        } else {
-            await msg.reply('⚠️ Формат: `!тамақ 60` (көмірсу граммы)');
-        }
-        return;
-    }
-
-    if (textLow === '!анализ') {
-        await msg.reply('🩺 *Еске салу:* Қанды және HbA1c мерзімді тексеруді ұмытпа!');
-        return;
-    }
-
-    if (textLow === '!үй' || textLow === '!дом' || textLow === '!home') {
-        await msg.reply('🏠 *VECTOR Smart Home*\n✅ Барлық жүйелер қалыпты.');
-        return;
-    }
-
-    if (textLow === '!ауа' || textLow === '!погода') {
-        await msg.reply('🌤️ Ауа райы әзірге қолжетімді емес. OpenWeather API қос.');
-        return;
-    }
-
-    // ---- ЛИЧНЫЕ СООБЩЕНИЯ: автоответы ----
-    if (!isGroup) {
-        const contact    = await msg.getContact();
-        const senderName = contact.name || contact.pushname || msg.from.replace('@c.us', '');
-        let autoReplied  = false;
-        let replyText    = '';
-
-        // Приоритет 1: Фиксированный ответ
-        const customReply = db.getCustomReply(msg.from);
-        if (customReply && canAutoReply(msg.from)) {
-            await enqueueWA(() => msg.reply(customReply));
-            replyText = customReply;
-            autoReplied = true;
-            db.log(`🎯 Кастомный ответ → ${senderName}`);
-            db.incStat('custom_replies');
-        }
-        // Приоритет 2: AI-ответ
-        else if (settings.aiEnabled && !msg.hasMedia && canAutoReply(msg.from)) {
-            const aiText = await generateAIResponse(text, senderName, msg.from);
-            if (aiText) {
-                await enqueueWA(() => msg.reply(`🤖 ${aiText}`));
-                replyText = aiText;
-                autoReplied = true;
-                db.log(`🤖 AI ответил → ${senderName}`);
-            }
-        }
-        // Приоритет 3: Базовый автоответ при ключевых словах (казахский + русский)
-        else if (
-            settings.autoReplyUrgent &&
-            (
-                textLow.includes('срочно') || textLow.includes('важно') || textLow.includes('помогите') ||
-                textLow.includes('шұғыл') || textLow.includes('маңызды') || textLow.includes('көмек')
-            ) &&
-            canAutoReply(msg.from)
-        ) {
-            await enqueueWA(() => msg.reply(settings.defaultAutoReply));
-            replyText = settings.defaultAutoReply;
-            autoReplied = true;
-            db.log(`🚨 Автоответ (ключ. слово) → ${senderName}`);
-            db.incStat('urgent_replies');
-        }
-
-        // ---- Пересылка в Telegram ----
-        let tgText = `💬 *От:* ${senderName} \`(${msg.from})\`\n`;
-        if (autoReplied) tgText += `🤖 _(Ответ отправлен)_\n`;
-        tgText += '\n';
-
-        if (msg.hasMedia) {
-            if (settings.forwardMedia) {
-                try {
-                    const media  = await msg.downloadMedia();
-                    const buffer = Buffer.from(media.data, 'base64');
-                    const caption = `${tgText}📎 _${media.mimetype}_\n${text || ''}\n\n\`WA_ID: ${msg.from}\`\n_↩️ Ответь на это сообщение_`;
-
-                    if (media.mimetype.includes('image')) {
-                        await tgBot.sendPhoto(TG_CHAT_ID, buffer, { caption, parse_mode: 'Markdown' });
-                    } else if (media.mimetype.includes('video')) {
-                        await tgBot.sendVideo(TG_CHAT_ID, buffer, { caption, parse_mode: 'Markdown' });
-                    } else if (media.mimetype.includes('audio') || media.mimetype.includes('ogg')) {
-                        await tgBot.sendVoice(TG_CHAT_ID, buffer, { caption, parse_mode: 'Markdown' });
-                    } else {
-                        await tgBot.sendDocument(TG_CHAT_ID, buffer, {
-                            filename: media.filename || 'file',
-                            caption, parse_mode: 'Markdown',
-                        });
-                    }
-                    db.incStat('media_forwarded');
-                    return;
-                } catch (e) {
-                    tgText += `📎 _[Медиа: ошибка загрузки]_\n`;
-                    db.log(`❌ Ошибка скачивания медиа: ${e.message}`);
-                }
-            } else {
-                tgText += `📁 _[Медиа скрыто]\n${text}_`;
-            }
-        } else {
-            tgText += text;
-        }
-
-        tgText += `\n\n---\n\`WA_ID: ${msg.from}\`\n_↩️ Ответь на это сообщение_`;
-        await sendToTelegram(tgText);
-    }
-});
-
-// ============================================================
-// 12. ГЛОБАЛЬНАЯ ОБРАБОТКА ОШИБОК
-// ============================================================
-process.on('unhandledRejection', (reason, promise) => {
+process.on('unhandledRejection', (reason) => {
     const msg = reason instanceof Error ? reason.message : String(reason);
     db.log(`⚠️ UnhandledRejection: ${msg}`);
 });
@@ -707,13 +757,11 @@ process.on('unhandledRejection', (reason, promise) => {
 process.on('uncaughtException', (err) => {
     db.log(`🔥 UncaughtException: ${err.message}`);
     sendToTelegram(`🔥 *Критическая ошибка:*\n\`${err.message}\``);
-    // Даём время на отправку в TG перед перезапуском
     setTimeout(() => process.exit(1), 2000);
 });
 
 // ============================================================
-// 13. СТАРТ
+// 14. СТАРТ
 // ============================================================
-db.log('🟡 Бот запускается...');
-sendToTelegram('🟡 *WA-бот запускается...*');
-client.initialize();
+db.log('🟡 Бот запускается (Baileys)...');
+connectToWhatsApp();
