@@ -10,8 +10,8 @@ import { GoogleGenerativeAI } from '@google/generative-ai';
 // ============================================================
 // 1. КОНФИГУРАЦИЯ
 // ============================================================
-const TG_TOKEN       = process.env.TG_TOKEN;
-const TG_CHAT_ID     = process.env.TG_CHAT_ID;
+const TG_TOKEN = process.env.TG_TOKEN;
+const TG_CHAT_ID = process.env.TG_CHAT_ID;
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
 
 if (!TG_TOKEN || !TG_CHAT_ID) {
@@ -29,13 +29,13 @@ const logger = Pino({ level: 'silent' });
 // 2. БАЗА ДАННЫХ (IN-MEMORY + ПЕРИОДИЧЕСКАЯ ЗАПИСЬ НА ДИСК)
 // ============================================================
 const DEFAULT_SETTINGS = {
-    alwaysOnline:      true,
-    autoReplyUrgent:   true,
-    forwardMedia:      true,
-    aiEnabled:         false,
-    defaultAutoReply:  'Ернияз қазір бос емес. Кейінірек жазады.',
-    antiSpam:          true,
-    antiSpamCooldown:  60,
+    alwaysOnline: true,
+    autoReplyUrgent: true,
+    forwardMedia: true,
+    aiEnabled: false,
+    defaultAutoReply: 'Ернияз қазір бос емес. Кейінірек жазады.',
+    antiSpam: true,
+    antiSpamCooldown: 60,
 };
 
 class LocalDB {
@@ -45,7 +45,7 @@ class LocalDB {
         this._dirty = false;
 
         setInterval(() => { if (this._dirty) { this._saveToDisk(); this._dirty = false; } }, 120_000);
-        process.on('SIGINT',  () => { this._saveToDisk(); process.exit(); });
+        process.on('SIGINT', () => { this._saveToDisk(); process.exit(); });
         process.on('SIGTERM', () => { this._saveToDisk(); process.exit(); });
     }
 
@@ -67,17 +67,17 @@ class LocalDB {
             if (!raw) throw new Error('Пустой файл');
             const d = JSON.parse(raw);
             // Миграция: дополняем недостающие поля
-            d.settings      = { ...DEFAULT_SETTINGS, ...d.settings };
-            d.customReplies  = d.customReplies  || {};
+            d.settings = { ...DEFAULT_SETTINGS, ...d.settings };
+            d.customReplies = d.customReplies || {};
             d.customAIPrompts = d.customAIPrompts || {};
-            d.stats          = d.stats          || {};
-            d.contacts       = d.contacts       || {};
+            d.stats = d.stats || {};
+            d.contacts = d.contacts || {};
             return d;
         } catch (err) {
             console.error(`⚠️ database.json повреждён (${err.message}). Пересоздаём...`);
             // Резервная копия битого файла
             const backup = this.file + '.bak.' + Date.now();
-            try { fs.renameSync(this.file, backup); } catch (_) {}
+            try { fs.renameSync(this.file, backup); } catch (_) { }
             const d = defaultData();
             fs.writeFileSync(this.file, JSON.stringify(d, null, 2));
             return d;
@@ -98,24 +98,24 @@ class LocalDB {
         console.log(line);
         this.data.logs.push(line);
         if (this.data.logs.length > 1000) this.data.logs.splice(0, this.data.logs.length - 1000);
-        fs.appendFile('bot.log', line + '\n', () => {});
+        fs.appendFile('bot.log', line + '\n', () => { });
         this._dirty = true;
     }
 
-    getSettings()           { return this.data.settings; }
-    toggleSetting(k)        { this.data.settings[k] = !this.data.settings[k]; this._dirty = true; return this.data.settings; }
-    setSetting(k, v)        { this.data.settings[k] = v; this._dirty = true; }
+    getSettings() { return this.data.settings; }
+    toggleSetting(k) { this.data.settings[k] = !this.data.settings[k]; this._dirty = true; return this.data.settings; }
+    setSetting(k, v) { this.data.settings[k] = v; this._dirty = true; }
 
-    setCustomReply(n, t)    { this.data.customReplies[n] = t; this._dirty = true; }
-    deleteCustomReply(n)    { delete this.data.customReplies[n]; this._dirty = true; }
-    getCustomReply(jid)     { return this.data.customReplies[toNum(jid)] || null; }
+    setCustomReply(n, t) { this.data.customReplies[n] = t; this._dirty = true; }
+    deleteCustomReply(n) { delete this.data.customReplies[n]; this._dirty = true; }
+    getCustomReply(jid) { return this.data.customReplies[toNum(jid)] || null; }
 
-    setCustomPrompt(n, t)   { this.data.customAIPrompts[n] = t; this._dirty = true; }
-    deleteCustomPrompt(n)   { delete this.data.customAIPrompts[n]; this._dirty = true; }
-    getCustomPrompt(jid)    { return this.data.customAIPrompts[toNum(jid)] || null; }
+    setCustomPrompt(n, t) { this.data.customAIPrompts[n] = t; this._dirty = true; }
+    deleteCustomPrompt(n) { delete this.data.customAIPrompts[n]; this._dirty = true; }
+    getCustomPrompt(jid) { return this.data.customAIPrompts[toNum(jid)] || null; }
 
-    incStat(key)            { this.data.stats[key] = (this.data.stats[key] || 0) + 1; this._dirty = true; }
-    getStats()              { return this.data.stats; }
+    incStat(key) { this.data.stats[key] = (this.data.stats[key] || 0) + 1; this._dirty = true; }
+    getStats() { return this.data.stats; }
 
     trackContact(jid, name, lastMsg) {
         const num = toNum(jid);
@@ -126,15 +126,15 @@ class LocalDB {
         const c = this.data.contacts[num];
         c.count++;
         c.lastSeen = now;
-        c.lastMsg  = lastMsg ? lastMsg.slice(0, 100) : '';
+        c.lastMsg = lastMsg ? lastMsg.slice(0, 100) : '';
         if (name && name !== num) c.name = name;
         this._dirty = true;
     }
-    getContact(num)         { return this.data.contacts[num.replace(/\D/g, '')] || null; }
-    getAllContacts()         { return this.data.contacts; }
+    getContact(num) { return this.data.contacts[num.replace(/\D/g, '')] || null; }
+    getAllContacts() { return this.data.contacts; }
 
-    listCustomReplies()     { return this.data.customReplies; }
-    listCustomPrompts()     { return this.data.customAIPrompts; }
+    listCustomReplies() { return this.data.customReplies; }
+    listCustomPrompts() { return this.data.customAIPrompts; }
 }
 
 const db = new LocalDB('./database.json');
@@ -144,7 +144,7 @@ const db = new LocalDB('./database.json');
 // ============================================================
 // Baileys использует @s.whatsapp.net (личные) и @g.us (группы)
 const toWAJid = (num) => `${num.replace(/\D/g, '')}@s.whatsapp.net`;
-const toNum   = (jid) => (jid || '').replace(/@.+$/, '');
+const toNum = (jid) => (jid || '').replace(/@.+$/, '');
 const isGroup = (jid) => (jid || '').includes('@g.us');
 
 // Извлечение текста из Baileys-сообщения
@@ -152,13 +152,13 @@ function getMsgText(msg) {
     const m = msg.message;
     if (!m) return '';
     return (
-        m.conversation                    ||
-        m.extendedTextMessage?.text        ||
-        m.imageMessage?.caption            ||
-        m.videoMessage?.caption            ||
-        m.documentMessage?.caption         ||
+        m.conversation ||
+        m.extendedTextMessage?.text ||
+        m.imageMessage?.caption ||
+        m.videoMessage?.caption ||
+        m.documentMessage?.caption ||
         m.buttonsResponseMessage?.selectedDisplayText ||
-        m.listResponseMessage?.title       ||
+        m.listResponseMessage?.title ||
         ''
     );
 }
@@ -171,10 +171,10 @@ function getMsgMediaType(msg) {
     // Однократный просмотр — особый случай, не скачиваем
     if (m.viewOnceMessage || m.viewOnceMessageV2) return 'viewonce';
 
-    if (m.imageMessage)    return 'image';
-    if (m.videoMessage)    return 'video';
+    if (m.imageMessage) return 'image';
+    if (m.videoMessage) return 'video';
     if (m.audioMessage || m.voiceMessage) return 'audio';
-    if (m.stickerMessage)  return 'sticker';
+    if (m.stickerMessage) return 'sticker';
     if (m.documentMessage) return 'document';
     return null;
 }
@@ -225,7 +225,7 @@ async function connectToWhatsApp() {
 
     sock = makeWASocket({
         version,
-        auth:  state,
+        auth: state,
         logger,
         browser: ['WA-Bot', 'Chrome', '121.0.0'],
         syncFullHistory: false,
@@ -253,7 +253,7 @@ async function connectToWhatsApp() {
             if (db.getSettings().alwaysOnline) {
                 setInterval(async () => {
                     if (db.getSettings().alwaysOnline) {
-                        try { await sock.sendPresenceUpdate('available'); } catch (_) {}
+                        try { await sock.sendPresenceUpdate('available'); } catch (_) { }
                     }
                 }, 45_000);
             }
@@ -304,14 +304,14 @@ async function handleMessage(msg) {
     if (jid === 'status@broadcast') return;
     if (jid.endsWith('@broadcast')) return;
 
-    const text      = getMsgText(msg);
-    const textLow   = text.toLowerCase();
+    const text = getMsgText(msg);
+    const textLow = text.toLowerCase();
     const mediaType = getMsgMediaType(msg);
-    const settings  = db.getSettings();
-    const pushName  = msg.pushName || toNum(jid);
+    const settings = db.getSettings();
+    const pushName = msg.pushName || toNum(jid);
 
     db.incStat('messages_received');
-    db.log(`📨 ${isGroup(jid) ? '[Группа]' : '[Личка]'} ${pushName}: ${text.slice(0,50) || `[${mediaType}]`}`);
+    db.log(`📨 ${isGroup(jid) ? '[Группа]' : '[Личка]'} ${pushName}: ${text.slice(0, 50) || `[${mediaType}]`}`);
 
     // Хелпер для ответа в WA
     const reply = (content) => enqueueWA(() => sock.sendMessage(jid, content, { quoted: msg }));
@@ -324,15 +324,16 @@ async function handleMessage(msg) {
     }
 
     if (textLow === '!help') {
-        await reply({ text:
-            '🤖 *Бот командалары:*\n' +
-            '`!ping` — тексеру\n' +
-            '`!ескерт [мин] [мәтін]` — еске салу\n' +
-            '`!тамақ [г]` — инсулин есептеу\n' +
-            '`!анализ` — қан тапсыру ескертуі\n' +
-            '`!үй` — смарт үй күйі\n' +
-            '`!ауа` — ауа райы\n' +
-            '`!id` — сіздің WA ID'
+        await reply({
+            text:
+                '🤖 *Бот командалары:*\n' +
+                '`!ping` — тексеру\n' +
+                '`!ескерт [мин] [мәтін]` — еске салу\n' +
+                '`!тамақ [г]` — инсулин есептеу\n' +
+                '`!анализ` — қан тапсыру ескертуі\n' +
+                '`!үй` — смарт үй күйі\n' +
+                '`!ауа` — ауа райы\n' +
+                '`!id` — сіздің WA ID'
         });
         return;
     }
@@ -344,13 +345,13 @@ async function handleMessage(msg) {
 
     // Еске салу
     if (textLow.startsWith('!ескерт ') || textLow.startsWith('!напомни ')) {
-        const parts   = text.split(' ');
+        const parts = text.split(' ');
         const minutes = parseInt(parts[1], 10);
-        const remind  = parts.slice(2).join(' ');
+        const remind = parts.slice(2).join(' ');
         if (!isNaN(minutes) && minutes > 0 && remind) {
             await reply({ text: `⏳ *${minutes}* минуттан кейін ескертемін.` });
             setTimeout(async () => {
-                try { await enqueueWA(() => sock.sendMessage(jid, { text: `⏰ *ЕСКЕ САЛУ:*\n${remind}` }, { quoted: msg })); } catch (_) {}
+                try { await enqueueWA(() => sock.sendMessage(jid, { text: `⏰ *ЕСКЕ САЛУ:*\n${remind}` }, { quoted: msg })); } catch (_) { }
             }, minutes * 60_000);
         } else {
             await reply({ text: '⚠️ Формат: `!ескерт 15 сүт алу`' });
@@ -363,11 +364,12 @@ async function handleMessage(msg) {
         const carbs = parseInt(textLow.replace(/[^\d]/g, ''), 10);
         if (!isNaN(carbs) && carbs > 0) {
             const insulin = (carbs / 10).toFixed(1);
-            await reply({ text:
-                `🍽️ *Инсулин калькуляторы:*\n` +
-                `Көмірсулар: *${carbs}г*\n` +
-                `💉 Инсулин: *${insulin} бірлік*\n` +
-                `_Дәрігермен ақылдасыңыз!_`
+            await reply({
+                text:
+                    `🍽️ *Инсулин калькуляторы:*\n` +
+                    `Көмірсулар: *${carbs}г*\n` +
+                    `💉 Инсулин: *${insulin} бірлік*\n` +
+                    `_Дәрігермен ақылдасыңыз!_`
             });
         } else {
             await reply({ text: '⚠️ Формат: `!тамақ 60` (көмірсу граммы)' });
@@ -448,16 +450,16 @@ async function handleMessage(msg) {
                 const buffer = await downloadMediaMessage(msg, 'buffer', {}, { logger, reuploadRequest: sock.updateMediaMessage });
                 const caption = `${tgText}📎 _[${mediaType}]_\n${text || ''}\n\n\`WA_ID: ${jid}\`\n_↩️ Ответь на это сообщение_`;
 
-                if      (mediaType === 'image')    await tgBot.sendPhoto(TG_CHAT_ID, buffer, { caption, parse_mode: 'Markdown' });
-                else if (mediaType === 'video')    await tgBot.sendVideo(TG_CHAT_ID, buffer, { caption, parse_mode: 'Markdown' });
-                else if (mediaType === 'audio')    await tgBot.sendVoice(TG_CHAT_ID, buffer, { caption, parse_mode: 'Markdown' });
-                else if (mediaType === 'sticker')  await tgBot.sendSticker(TG_CHAT_ID, buffer);
-                else                               await tgBot.sendDocument(TG_CHAT_ID, buffer, { caption, parse_mode: 'Markdown' });
+                if (mediaType === 'image') await tgBot.sendPhoto(TG_CHAT_ID, buffer, { caption, parse_mode: 'Markdown' });
+                else if (mediaType === 'video') await tgBot.sendVideo(TG_CHAT_ID, buffer, { caption, parse_mode: 'Markdown' });
+                else if (mediaType === 'audio') await tgBot.sendVoice(TG_CHAT_ID, buffer, { caption, parse_mode: 'Markdown' });
+                else if (mediaType === 'sticker') await tgBot.sendSticker(TG_CHAT_ID, buffer);
+                else await tgBot.sendDocument(TG_CHAT_ID, buffer, { caption, parse_mode: 'Markdown' });
 
                 db.incStat('media_forwarded');
                 return;
             } catch (e) {
-                tgText += `📎 _[${mediaType}: ошибка загрузки — ${e.message.slice(0,60)}]_\n`;
+                tgText += `📎 _[${mediaType}: ошибка загрузки — ${e.message.slice(0, 60)}]_\n`;
                 db.log(`❌ Ошибка скачивания медиа: ${e.message}`);
             }
         } else if (mediaType && !settings.forwardMedia) {
@@ -486,7 +488,7 @@ async function generateAIResponse(messageText, senderName, jid) {
 
         // Новый SDK: systemInstruction передаётся на уровне модели
         const model = genAI.getGenerativeModel({
-            model: 'gemini-1.0-pro', // Откат на 1.0 Pro, так как ключ не поддерживает 1.5/2.0
+            model: 'gemini-1.5-flash-latest', // пробую latest чтобы избежать 404
             systemInstruction: sysInstruction,
         });
 
@@ -494,12 +496,12 @@ async function generateAIResponse(messageText, senderName, jid) {
         if (!aiConversations.has(jid)) aiConversations.set(jid, []);
         const history = aiConversations.get(jid);
 
-        const chat   = model.startChat({ history });
+        const chat = model.startChat({ history });
         const result = await chat.sendMessage(messageText);
         const aiText = result.response.text();
 
         // Сохраняем историю (макс 20 реплик = 10 обменов)
-        history.push({ role: 'user',  parts: [{ text: messageText }] });
+        history.push({ role: 'user', parts: [{ text: messageText }] });
         history.push({ role: 'model', parts: [{ text: aiText }] });
         if (history.length > 20) history.splice(0, 2);
 
@@ -526,24 +528,24 @@ const getSettingsKeyboard = (s) => ({
     reply_markup: {
         inline_keyboard: [
             [
-                { text: `${s.alwaysOnline    ? '🟢' : '⚫'} Онлайн`,    callback_data: 'toggle_alwaysOnline' },
-                { text: `${s.aiEnabled       ? '🤖' : '⚫'} AI-Ответы`, callback_data: 'toggle_aiEnabled' },
+                { text: `${s.alwaysOnline ? '🟢' : '⚫'} Онлайн`, callback_data: 'toggle_alwaysOnline' },
+                { text: `${s.aiEnabled ? '🤖' : '⚫'} AI-Ответы`, callback_data: 'toggle_aiEnabled' },
             ],
             [
                 { text: `${s.autoReplyUrgent ? '🚨' : '⚫'} Автоответ`, callback_data: 'toggle_autoReplyUrgent' },
-                { text: `${s.forwardMedia    ? '🖼️' : '⚫'} Медиа`,     callback_data: 'toggle_forwardMedia' },
+                { text: `${s.forwardMedia ? '🖼️' : '⚫'} Медиа`, callback_data: 'toggle_forwardMedia' },
             ],
             [
-                { text: `${s.antiSpam        ? '🛡️' : '⚫'} Антиспам`,  callback_data: 'toggle_antiSpam' },
-                { text: '📊 Статус',                                      callback_data: 'sys_status' },
+                { text: `${s.antiSpam ? '🛡️' : '⚫'} Антиспам`, callback_data: 'toggle_antiSpam' },
+                { text: '📊 Статус', callback_data: 'sys_status' },
             ],
             [
                 { text: '📋 Кастомные ответы', callback_data: 'list_replies' },
-                { text: '🧠 AI-промпты',       callback_data: 'list_prompts' },
+                { text: '🧠 AI-промпты', callback_data: 'list_prompts' },
             ],
             [
-                { text: '📈 Статистика',        callback_data: 'show_stats' },
-                { text: '📜 Логи (30)',          callback_data: 'show_logs' },
+                { text: '📈 Статистика', callback_data: 'show_stats' },
+                { text: '📜 Логи (30)', callback_data: 'show_logs' },
             ],
         ],
     },
@@ -554,7 +556,7 @@ const getSettingsKeyboard = (s) => ({
 // ============================================================
 tgBot.on('message', async (tgMsg) => {
     if (tgMsg.chat.id.toString() !== TG_CHAT_ID) return;
-    const text     = tgMsg.text || '';
+    const text = tgMsg.text || '';
     const settings = db.getSettings();
 
     if (text === '/start' || text === '/menu') {
@@ -581,7 +583,7 @@ tgBot.on('message', async (tgMsg) => {
     if (text.startsWith('/setreply ')) {
         const m = text.match(/^\/setreply\s+(\d+)\s+(.+)$/s);
         if (m) { db.setCustomReply(m[1], m[2]); db.forceSave(); await sendToTelegram(`✅ Ответ для *+${m[1]}* установлен.`); }
-        else   { await sendToTelegram('⚠️ Формат: `/setreply 77012345678 текст`'); }
+        else { await sendToTelegram('⚠️ Формат: `/setreply 77012345678 текст`'); }
         return;
     }
 
@@ -637,7 +639,7 @@ tgBot.on('message', async (tgMsg) => {
         if (!c) {
             await sendToTelegram(`❓ Контакт *+${num}* не найден.`);
         } else {
-            const hasReply  = db.getCustomReply(toWAJid(num)) ? '✅ есть' : '❌ нет';
+            const hasReply = db.getCustomReply(toWAJid(num)) ? '✅ есть' : '❌ нет';
             const hasPrompt = db.getCustomPrompt(toWAJid(num)) ? '✅ есть' : '❌ нет';
             await sendToTelegram(
                 `👤 *Статистика +${num}*\n` +
@@ -655,12 +657,12 @@ tgBot.on('message', async (tgMsg) => {
 
     if (text === '/top') {
         const contacts = db.getAllContacts();
-        const sorted = Object.entries(contacts).sort(([,a],[,b]) => b.count - a.count).slice(0, 10);
+        const sorted = Object.entries(contacts).sort(([, a], [, b]) => b.count - a.count).slice(0, 10);
         if (sorted.length === 0) {
             await sendToTelegram('📭 Пока нет данных.');
         } else {
             const lines = sorted.map(([num, c], i) =>
-                `${i+1}. *${c.name || '+'+num}* — ${c.count} сообщ.\n   _${c.lastSeen}_`
+                `${i + 1}. *${c.name || '+' + num}* — ${c.count} сообщ.\n   _${c.lastSeen}_`
             );
             await sendToTelegram(`📊 *Топ-${sorted.length} контактов:*\n\n` + lines.join('\n\n'));
         }
@@ -689,26 +691,26 @@ tgBot.on('message', async (tgMsg) => {
             const waJid = waMatch[1];
             try {
                 if (tgMsg.photo) {
-                    const fileId   = tgMsg.photo[tgMsg.photo.length - 1].file_id;
+                    const fileId = tgMsg.photo[tgMsg.photo.length - 1].file_id;
                     const fileLink = await tgBot.getFileLink(fileId);
-                    const res      = await fetch(fileLink);
-                    const buffer   = Buffer.from(await res.arrayBuffer());
+                    const res = await fetch(fileLink);
+                    const buffer = Buffer.from(await res.arrayBuffer());
                     await enqueueWA(() => sock.sendMessage(waJid, { image: buffer, caption: tgMsg.caption || '' }));
                 } else if (tgMsg.video) {
                     const fileLink = await tgBot.getFileLink(tgMsg.video.file_id);
-                    const res      = await fetch(fileLink);
-                    const buffer   = Buffer.from(await res.arrayBuffer());
+                    const res = await fetch(fileLink);
+                    const buffer = Buffer.from(await res.arrayBuffer());
                     await enqueueWA(() => sock.sendMessage(waJid, { video: buffer, caption: tgMsg.caption || '' }));
                 } else if (tgMsg.document) {
                     const fileLink = await tgBot.getFileLink(tgMsg.document.file_id);
-                    const res      = await fetch(fileLink);
-                    const buffer   = Buffer.from(await res.arrayBuffer());
+                    const res = await fetch(fileLink);
+                    const buffer = Buffer.from(await res.arrayBuffer());
                     await enqueueWA(() => sock.sendMessage(waJid, { document: buffer, mimetype: tgMsg.document.mime_type, fileName: tgMsg.document.file_name || 'file' }));
                 } else if (tgMsg.voice || tgMsg.audio) {
-                    const fileId   = (tgMsg.voice || tgMsg.audio).file_id;
+                    const fileId = (tgMsg.voice || tgMsg.audio).file_id;
                     const fileLink = await tgBot.getFileLink(fileId);
-                    const res      = await fetch(fileLink);
-                    const buffer   = Buffer.from(await res.arrayBuffer());
+                    const res = await fetch(fileLink);
+                    const buffer = Buffer.from(await res.arrayBuffer());
                     await enqueueWA(() => sock.sendMessage(waJid, { audio: buffer, mimetype: 'audio/ogg; codecs=opus', ptt: true }));
                 } else if (tgMsg.text) {
                     await enqueueWA(() => sock.sendMessage(waJid, { text: tgMsg.text }));
@@ -744,12 +746,12 @@ tgBot.on('callback_query', async (query) => {
     }
 
     else if (action === 'sys_status') {
-        const freeRAM   = Math.round(os.freemem() / 1024 / 1024);
-        const totalRAM  = Math.round(os.totalmem() / 1024 / 1024);
+        const freeRAM = Math.round(os.freemem() / 1024 / 1024);
+        const totalRAM = Math.round(os.totalmem() / 1024 / 1024);
         const scriptRAM = Math.round(process.memoryUsage().rss / 1024 / 1024);
-        const heapUsed  = Math.round(process.memoryUsage().heapUsed / 1024 / 1024);
-        const uptime    = process.uptime();
-        const uptimeStr = `${Math.floor(uptime/3600)}ч ${Math.floor((uptime%3600)/60)}м`;
+        const heapUsed = Math.round(process.memoryUsage().heapUsed / 1024 / 1024);
+        const uptime = process.uptime();
+        const uptimeStr = `${Math.floor(uptime / 3600)}ч ${Math.floor((uptime % 3600) / 60)}м`;
         const stats = [
             `💻 *Статус (Baileys)*`,
             `🧠 RAM хоста: ${freeRAM}MB / ${totalRAM}MB`,
@@ -765,20 +767,20 @@ tgBot.on('callback_query', async (query) => {
         const r = db.listCustomReplies();
         const keys = Object.keys(r);
         if (!keys.length) { await tgBot.answerCallbackQuery(query.id, { text: 'Нет кастомных ответов', show_alert: true }); }
-        else { await sendToTelegram('📋 *Кастомные ответы:*\n' + keys.map(k=>`+${k}: _${r[k].slice(0,40)}_`).join('\n')); await tgBot.answerCallbackQuery(query.id); }
+        else { await sendToTelegram('📋 *Кастомные ответы:*\n' + keys.map(k => `+${k}: _${r[k].slice(0, 40)}_`).join('\n')); await tgBot.answerCallbackQuery(query.id); }
     }
 
     else if (action === 'list_prompts') {
         const p = db.listCustomPrompts();
         const keys = Object.keys(p);
         if (!keys.length) { await tgBot.answerCallbackQuery(query.id, { text: 'Нет AI-инструкций', show_alert: true }); }
-        else { await sendToTelegram('🧠 *AI-инструкции:*\n' + keys.map(k=>`+${k}: _${p[k].slice(0,60)}_`).join('\n')); await tgBot.answerCallbackQuery(query.id); }
+        else { await sendToTelegram('🧠 *AI-инструкции:*\n' + keys.map(k => `+${k}: _${p[k].slice(0, 60)}_`).join('\n')); await tgBot.answerCallbackQuery(query.id); }
     }
 
     else if (action === 'show_stats') {
         const s = db.getStats();
         const txt = '📈 *Статистика:*\n' + (Object.keys(s).length
-            ? Object.entries(s).map(([k,v]) => `• ${k}: *${v}*`).join('\n')
+            ? Object.entries(s).map(([k, v]) => `• ${k}: *${v}*`).join('\n')
             : '_Нет данных_');
         await tgBot.answerCallbackQuery(query.id, { text: txt.slice(0, 200), show_alert: true });
     }
