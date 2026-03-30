@@ -95,13 +95,25 @@ const getMainMenu = () => {
     };
 };
 
+// Постоянная нижняя клавиатура (вместо букв)
+const persistentKeyboard = {
+    reply_markup: {
+        keyboard: [
+            [{ text: '🚀 Главное меню' }],
+            [{ text: '📊 Топ-10 чатов' }, { text: '📱 Отправить в WA' }]
+        ],
+        resize_keyboard: true,
+        is_persistent: true
+    }
+};
+
 tgBot.on('message', async (tgMsg) => {
     if (tgMsg.chat.id.toString() !== TG_CHAT_ID) return;
     const text = tgMsg.text || '';
     const state = userStates.get(TG_CHAT_ID);
 
     // Если мы ждём ввода от пользователя
-    if (state && text && !text.startsWith('/')) {
+    if (state && text && !text.startsWith('/') && !text.startsWith('🚀') && !text.startsWith('📊') && !text.startsWith('📱')) {
         if (state.action === 'set_cooldown') {
             const secs = parseInt(text, 10);
             if (!isNaN(secs) && secs >= 0) {
@@ -230,9 +242,35 @@ tgBot.on('message', async (tgMsg) => {
         }
     }
 
-    if (text === '/start' || text === '/menu') {
+    if (text === '/start') {
+        userStates.delete(TG_CHAT_ID);
+        await tgBot.sendMessage(TG_CHAT_ID, '👋 Добро пожаловать! Нижняя клавиатура активирована.', persistentKeyboard);
+        await tgBot.sendMessage(TG_CHAT_ID, '🚀 *ГЛАВНОЕ УПРАВЛЕНИЕ БОТОМ*\nВыберите действие:', { parse_mode: 'Markdown', ...getMainMenu() });
+        return;
+    }
+
+    if (text === '/menu' || text === '🚀 Главное меню') {
         userStates.delete(TG_CHAT_ID); // Сбрасываем любые зависшие состояния при вызове меню
-        await tgBot.sendMessage(TG_CHAT_ID, '🚀 *ГЛАВНОЕ УПРАВЛЕНИЕ БОТОМ*\nВыберите действие из меню кнопок ниже. Вам больше не нужно вводить команды!', { parse_mode: 'Markdown', ...getMainMenu() });
+        await tgBot.sendMessage(TG_CHAT_ID, '🚀 *ГЛАВНОЕ УПРАВЛЕНИЕ БОТОМ*\nВыберите действие из меню кнопок ниже:', { parse_mode: 'Markdown', ...getMainMenu() });
+        return;
+    }
+
+    if (text === '/top' || text === '📊 Топ-10 чатов') {
+        userStates.delete(TG_CHAT_ID);
+        const contacts = db.getAllContacts();
+        const sorted = Object.entries(contacts).sort(([, a], [, b]) => b.count - a.count).slice(0, 10);
+        if (sorted.length === 0) {
+            await sendToTelegram('📭 База контактов пока пуста.');
+        } else {
+            const lines = sorted.map(([num, c], i) => `${i + 1}. *${c.name || '+' + num}* — ${c.count} сообщ.\n   _${c.lastSeen}_`);
+            await sendToTelegram(`📊 *Самые общительные:*\n\n` + lines.join('\n\n'));
+        }
+        return;
+    }
+
+    if (text === '📱 Отправить в WA') {
+        userStates.set(TG_CHAT_ID, { action: 'send_wa_step1' });
+        await sendToTelegram('📤 *Сообщение через бота*\nШаг 1: Кому пишем? Укажите номер:', cancelKeyboard);
         return;
     }
 
