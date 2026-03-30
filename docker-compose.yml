@@ -12,7 +12,7 @@ services:
     deploy:
       resources:
         limits:
-          memory: 256M   # Baileys без Chrome — достаточно 256MB
+          memory: 350M   # Baileys без Chrome — достаточно 256MB
         reservations:
           memory: 64M
     volumes:
