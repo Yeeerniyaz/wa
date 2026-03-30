@@ -2,7 +2,7 @@ version: '3.8'
 
 services:
   wa-bot:
-    build: .
+    build: wa-online-local:latest
     container_name: wa-always-online
     restart: unless-stopped
     environment:
