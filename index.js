@@ -503,7 +503,12 @@ async function generateAIResponse(messageText, senderName, jid) {
                 'X-Title': 'WhatsApp Bot'
             },
             body: JSON.stringify({
-                model: 'google/gemini-2.0-pro-exp-02-05:free', // Самая умная бесплатная модель на сегодня (Gemini 2.0 Pro)
+                // Если первая модель перегружена (429), запрос уйдёт ко второй, и так далее. Гарантирует ответ умной ИИ.
+                models: [
+                    'meta-llama/llama-3.3-70b-instruct:free',
+                    'qwen/qwen-2.5-72b-instruct:free',
+                    'meta-llama/llama-3.1-8b-instruct:free'
+                ],
                 messages: history,
                 temperature: 0.7,
                 max_tokens: 1024,
