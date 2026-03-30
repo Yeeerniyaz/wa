@@ -50,18 +50,38 @@ class LocalDB {
     }
 
     _init() {
+        const defaultData = () => ({
+            logs: [], customReplies: {}, customAIPrompts: {},
+            stats: {}, contacts: {}, settings: { ...DEFAULT_SETTINGS }
+        });
+
         if (!fs.existsSync(this.file)) {
-            const d = { logs: [], customReplies: {}, customAIPrompts: {}, stats: {}, contacts: {}, settings: DEFAULT_SETTINGS };
+            const d = defaultData();
+            fs.writeFileSync(this.file, JSON.stringify(d, null, 2));
+            console.log('📁 database.json создан с нуля.');
+            return d;
+        }
+
+        try {
+            const raw = fs.readFileSync(this.file, 'utf8').trim();
+            if (!raw) throw new Error('Пустой файл');
+            const d = JSON.parse(raw);
+            // Миграция: дополняем недостающие поля
+            d.settings      = { ...DEFAULT_SETTINGS, ...d.settings };
+            d.customReplies  = d.customReplies  || {};
+            d.customAIPrompts = d.customAIPrompts || {};
+            d.stats          = d.stats          || {};
+            d.contacts       = d.contacts       || {};
+            return d;
+        } catch (err) {
+            console.error(`⚠️ database.json повреждён (${err.message}). Пересоздаём...`);
+            // Резервная копия битого файла
+            const backup = this.file + '.bak.' + Date.now();
+            try { fs.renameSync(this.file, backup); } catch (_) {}
+            const d = defaultData();
             fs.writeFileSync(this.file, JSON.stringify(d, null, 2));
             return d;
         }
-        const d = JSON.parse(fs.readFileSync(this.file, 'utf8'));
-        d.settings     = { ...DEFAULT_SETTINGS, ...d.settings };
-        d.customReplies  = d.customReplies  || {};
-        d.customAIPrompts = d.customAIPrompts || {};
-        d.stats         = d.stats         || {};
-        d.contacts      = d.contacts      || {};
-        return d;
     }
 
     _saveToDisk() {
