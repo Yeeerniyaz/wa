@@ -498,7 +498,9 @@ async function generateAIResponse(messageText, senderName, jid) {
             method: 'POST',
             headers: {
                 'Authorization': `Bearer ${OPENROUTER_API_KEY}`,
-                'Content-Type': 'application/json'
+                'Content-Type': 'application/json',
+                'HTTP-Referer': 'https://github.com/Yeeerniyaz/wa',
+                'X-Title': 'WhatsApp Bot'
             },
             body: JSON.stringify({
                 model: 'google/gemini-2.0-flash-lite-preview-02-05:free', // полностью бесплатная и очень быстрая модель
@@ -508,7 +510,10 @@ async function generateAIResponse(messageText, senderName, jid) {
             })
         });
 
-        if (!response.ok) throw new Error(`OpenRouter API error: ${response.status}`);
+        if (!response.ok) {
+            const errData = await response.text();
+            throw new Error(`OpenRouter API error: ${response.status} - ${errData}`);
+        }
 
         const data = await response.json();
         const aiText = data.choices[0]?.message?.content || 'Кешіріңіз, түсінбедім.';
