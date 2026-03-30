@@ -30,7 +30,7 @@ const DEFAULT_SETTINGS = {
     autoReplyUrgent:   true,
     forwardMedia:      true,
     aiEnabled:         false,
-    defaultAutoReply:  'Ернияз сейчас занят. Напишу позже.',
+    defaultAutoReply:  'Ернияз қазір бос емес. Кейінірек жазады.',
     antiSpam:          true,
     antiSpamCooldown:  60,   // секунд между повторными авто-ответами одному пользователю
 };
@@ -181,29 +181,31 @@ const aiConversations = new Map(); // waId → [{role, parts}[]]
 async function generateAIResponse(messageText, senderName, waId) {
     if (!genAI) return null;
     try {
-        const model = genAI.getGenerativeModel({ model: 'gemini-1.5-flash' });
+        const model = genAI.getGenerativeModel({ model: 'gemini-pro' });
 
         const customPrompt = db.getCustomPrompt(waId);
-        const systemInstruction = customPrompt
-            ? `Ты представляешь Ернияза. Для пользователя "${senderName}" действует правило: "${customPrompt}". Строго следуй ему.`
-            : `Ты виртуальный помощник Ернияза. Он сейчас занят. Отвечай коротко, по-русски, умно и с лёгким юмором. Не говори, что ты ИИ явно без необходимости.`;
+        const sysMsg = customPrompt
+            ? `Сен Ернияздың виртуалды көмекшісісің. "${senderName}" үшін арнайы ереже бар: "${customPrompt}". Осыған қатаң бағын.`
+            : `Сен Ернияздың виртуалды көмекшісісің. Ол қазір бос емес. Жауапты қысқа, мазмұнды, жеңіл әзілмен жаз. Адам қазақша жазса — қазақша жауап бер. Адам орысша жазса — орысша жауап бер. Ағылшынша жазса — ағылшынша.`;
 
-        // Ведём историю диалога (последние 10 сообщений)
-        if (!aiConversations.has(waId)) aiConversations.set(waId, []);
+        // Ведём историю диалога (последние 20 реплик)
+        if (!aiConversations.has(waId)) {
+            // Первое сообщение: инструкция через user/model пинг
+            aiConversations.set(waId, [
+                { role: 'user',  parts: [{ text: sysMsg }] },
+                { role: 'model', parts: [{ text: 'Понял, буду следовать инструкции.' }] },
+            ]);
+        }
         const history = aiConversations.get(waId);
 
-        history.push({ role: 'user', parts: [{ text: messageText }] });
-        if (history.length > 20) history.splice(0, history.length - 20);
-
-        const chat = model.startChat({
-            systemInstruction,
-            history: history.slice(0, -1),
-        });
-
+        const chat = model.startChat({ history });
         const result = await chat.sendMessage(messageText);
         const aiText = result.response.text();
 
+        history.push({ role: 'user',  parts: [{ text: messageText }] });
         history.push({ role: 'model', parts: [{ text: aiText }] });
+        if (history.length > 22) history.splice(2, 2); // убираем старые, но сохраняем системный пинг
+
         db.incStat('ai_replies');
         return aiText;
     } catch (e) {
@@ -537,76 +539,76 @@ client.on('message', async (msg) => {
     // ---- КОМАНДЫ (доступны всем, кто написал, в т.ч. группы) ----
 
     if (textLow === '!ping') {
-        await msg.reply('🤖 *Pong!* Система работает.');
+        await msg.reply('🤖 *Pong!* Жүйе жұмыс істеп тұр.');
         return;
     }
 
     if (textLow === '!help') {
         await msg.reply(
-            '🤖 *Команды бота:*\n' +
-            '`!ping` — проверка\n' +
-            '`!напомни [мин] [текст]` — напоминание\n' +
-            '`!тамақ [г]` — расчёт инсулина\n' +
-            '`!анализ` — напоминание о крови\n' +
-            '`!дом` — статус умного дома\n' +
-            '`!погода` — заглушка погоды\n' +
-            '`!id` — ваш WA ID'
+            '🤖 *Бот командалары:*\n' +
+            '`!ping` — тексеру\n' +
+            '`!ескерт [мин] [мәтін]` — еске салу\n' +
+            '`!тамақ [г]` — инсулин есептеу\n' +
+            '`!анализ` — қан тапсыру ескертуі\n' +
+            '`!үй` — смарт үй күйі\n' +
+            '`!ауа` — ауа райы\n' +
+            '`!id` — сіздің WA ID'
         );
         return;
     }
 
     if (textLow === '!id') {
-        await msg.reply(`🔑 Ваш WA ID:\n\`${msg.from}\``);
+        await msg.reply(`🔑 Сіздің WA ID:\n\`${msg.from}\``);
         return;
     }
 
-    // Напоминание
-    if (textLow.startsWith('!напомни ')) {
+    // Еске салу (казахский + русский)
+    if (textLow.startsWith('!ескерт ') || textLow.startsWith('!напомни ')) {
         const parts = text.split(' ');
         const minutes = parseInt(parts[1], 10);
         const reminderText = parts.slice(2).join(' ');
         if (!isNaN(minutes) && minutes > 0 && reminderText) {
-            await msg.reply(`⏳ Напомню через *${minutes}* мин.`);
+            await msg.reply(`⏳ *${minutes}* минуттан кейін ескертемін.`);
             setTimeout(async () => {
                 try {
-                    await enqueueWA(() => msg.reply(`⏰ *НАПОМИНАНИЕ:*\n${reminderText}`));
+                    await enqueueWA(() => msg.reply(`⏰ *ЕСКЕ САЛУ:*\n${reminderText}`));
                 } catch (_) {}
             }, minutes * 60_000);
         } else {
-            await msg.reply('⚠️ Формат: `!напомни 15 купить молоко`');
+            await msg.reply('⚠️ Формат: `!ескерт 15 сүт алу`');
         }
         return;
     }
 
-    // Инсулин-калькулятор
+    // Инсулин калькуляторы
     if (textLow.startsWith('!тамақ') || textLow.startsWith('!еда')) {
         const carbs = parseInt(textLow.replace(/[^\d]/g, ''), 10);
         if (!isNaN(carbs) && carbs > 0) {
             const insulin = (carbs / 10).toFixed(1);
             await msg.reply(
-                `🍽️ *Калькулятор инсулина:*\n` +
-                `Углеводы: *${carbs}г*\n` +
-                `💉 Инсулин: *${insulin} ед.*\n` +
-                `_Консультируйся с врачом!_`
+                `🍽️ *Инсулин калькуляторы:*\n` +
+                `Көмірсулар: *${carbs}г*\n` +
+                `💉 Инсулин: *${insulin} бірлік*\n` +
+                `_Дәрігермен ақылдасыңыз!_`
             );
         } else {
-            await msg.reply('⚠️ Формат: `!тамақ 60` (граммы углеводов)');
+            await msg.reply('⚠️ Формат: `!тамақ 60` (көмірсу граммы)');
         }
         return;
     }
 
     if (textLow === '!анализ') {
-        await msg.reply('🩺 *Напоминание:* Не забывай проверять кровь и HbA1c регулярно!');
+        await msg.reply('🩺 *Еске салу:* Қанды және HbA1c мерзімді тексеруді ұмытпа!');
         return;
     }
 
-    if (textLow === '!дом' || textLow === '!home') {
-        await msg.reply('🏠 *VECTOR Smart Home*\n✅ Все системы в норме.');
+    if (textLow === '!үй' || textLow === '!дом' || textLow === '!home') {
+        await msg.reply('🏠 *VECTOR Smart Home*\n✅ Барлық жүйелер қалыпты.');
         return;
     }
 
-    if (textLow === '!погода') {
-        await msg.reply('🌤️ Погода пока недоступна. Подключи OpenWeather API.');
+    if (textLow === '!ауа' || textLow === '!погода') {
+        await msg.reply('🌤️ Ауа райы әзірге қолжетімді емес. OpenWeather API қос.');
         return;
     }
 
@@ -636,10 +638,13 @@ client.on('message', async (msg) => {
                 db.log(`🤖 AI ответил → ${senderName}`);
             }
         }
-        // Приоритет 3: Базовый автоответ при ключевых словах
+        // Приоритет 3: Базовый автоответ при ключевых словах (казахский + русский)
         else if (
             settings.autoReplyUrgent &&
-            (textLow.includes('срочно') || textLow.includes('важно') || textLow.includes('помогите')) &&
+            (
+                textLow.includes('срочно') || textLow.includes('важно') || textLow.includes('помогите') ||
+                textLow.includes('шұғыл') || textLow.includes('маңызды') || textLow.includes('көмек')
+            ) &&
             canAutoReply(msg.from)
         ) {
             await enqueueWA(() => msg.reply(settings.defaultAutoReply));
