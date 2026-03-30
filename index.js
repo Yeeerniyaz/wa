@@ -143,10 +143,14 @@ function getMsgText(msg) {
     );
 }
 
-// Тип медиа
+// Тип медиа (включая однократный просмотр)
 function getMsgMediaType(msg) {
     const m = msg.message;
     if (!m) return null;
+
+    // Однократный просмотр — особый случай, не скачиваем
+    if (m.viewOnceMessage || m.viewOnceMessageV2) return 'viewonce';
+
     if (m.imageMessage)    return 'image';
     if (m.videoMessage)    return 'video';
     if (m.audioMessage || m.voiceMessage) return 'audio';
@@ -271,16 +275,23 @@ async function connectToWhatsApp() {
 // ============================================================
 async function handleMessage(msg) {
     if (!msg.message) return;
-    if (msg.key.fromMe)   return; // Игнорируем свои сообщения
+    if (msg.key.fromMe) return;
 
-    const jid      = msg.key.remoteJid;
-    const text     = getMsgText(msg);
-    const textLow  = text.toLowerCase();
+    const jid = msg.key.remoteJid;
+
+    // Фильтруем broadcast и статусы
+    if (!jid) return;
+    if (jid === 'status@broadcast') return;
+    if (jid.endsWith('@broadcast')) return;
+
+    const text      = getMsgText(msg);
+    const textLow   = text.toLowerCase();
     const mediaType = getMsgMediaType(msg);
-    const settings = db.getSettings();
-    const pushName = msg.pushName || toNum(jid);
+    const settings  = db.getSettings();
+    const pushName  = msg.pushName || toNum(jid);
 
     db.incStat('messages_received');
+    db.log(`📨 ${isGroup(jid) ? '[Группа]' : '[Личка]'} ${pushName}: ${text.slice(0,50) || `[${mediaType}]`}`);
 
     // Хелпер для ответа в WA
     const reply = (content) => enqueueWA(() => sock.sendMessage(jid, content, { quoted: msg }));
@@ -366,7 +377,7 @@ async function handleMessage(msg) {
 
         let autoReplied = false;
 
-        // Приоритет 1: Фиксированный ответ
+        // Приоритет 1: Фиксированный кастомный ответ
         const customReply = db.getCustomReply(jid);
         if (customReply && canAutoReply(jid)) {
             await enqueueWA(() => sock.sendMessage(jid, { text: customReply }, { quoted: msg }));
@@ -374,8 +385,8 @@ async function handleMessage(msg) {
             db.log(`🎯 Кастомный ответ → ${pushName}`);
             db.incStat('custom_replies');
         }
-        // Приоритет 2: AI
-        else if (settings.aiEnabled && !mediaType && canAutoReply(jid)) {
+        // Приоритет 2: AI-ответ (только текстовые)
+        else if (settings.aiEnabled && !mediaType && text && canAutoReply(jid)) {
             const aiText = await generateAIResponse(text, pushName, jid);
             if (aiText) {
                 await enqueueWA(() => sock.sendMessage(jid, { text: `🤖 ${aiText}` }, { quoted: msg }));
@@ -383,23 +394,26 @@ async function handleMessage(msg) {
                 db.log(`🤖 AI ответил → ${pushName}`);
             }
         }
-        // Приоритет 3: Ключевые слова
-        else if (
-            settings.autoReplyUrgent &&
-            (textLow.includes('срочно') || textLow.includes('важно') || textLow.includes('помогите') ||
-             textLow.includes('шұғыл') || textLow.includes('маңызды') || textLow.includes('көмек')) &&
-            canAutoReply(jid)
-        ) {
+        // Приоритет 3: Базовый авто-ответ на ЛЮБОЕ сообщение (с кулдауном)
+        else if (settings.autoReplyUrgent && canAutoReply(jid)) {
             await enqueueWA(() => sock.sendMessage(jid, { text: settings.defaultAutoReply }, { quoted: msg }));
             autoReplied = true;
-            db.log(`🚨 Автоответ (ключ. слово) → ${pushName}`);
-            db.incStat('urgent_replies');
+            db.log(`💬 Базовый авто-ответ → ${pushName}`);
+            db.incStat('auto_replies');
         }
 
         // ---- Пересылка в Telegram ----
         let tgText = `💬 *От:* ${pushName} \`(${jid})\`\n`;
         if (autoReplied) tgText += `🤖 _(Ответ отправлен)_\n`;
         tgText += '\n';
+
+        // 🔒 Однократный просмотр — скачать невозможно, только уведомляем
+        if (mediaType === 'viewonce') {
+            tgText += `🔒 _[Медиа однократного просмотра — скачать нельзя]_`;
+            tgText += `\n\n---\n\`WA_ID: ${jid}\`\n_↩️ Ответь на это сообщение_`;
+            await sendToTelegram(tgText);
+            return;
+        }
 
         if (mediaType && settings.forwardMedia) {
             try {
@@ -415,7 +429,7 @@ async function handleMessage(msg) {
                 db.incStat('media_forwarded');
                 return;
             } catch (e) {
-                tgText += `📎 _[${mediaType}: ошибка загрузки]_\n`;
+                tgText += `📎 _[${mediaType}: ошибка загрузки — ${e.message.slice(0,60)}]_\n`;
                 db.log(`❌ Ошибка скачивания медиа: ${e.message}`);
             }
         } else if (mediaType && !settings.forwardMedia) {
@@ -430,35 +444,36 @@ async function handleMessage(msg) {
 }
 
 // ============================================================
-// 9. AI-ГЕНЕРАТОР ОТВЕТОВ
+// 9. AI-ГЕНЕРАТОР ОТВЕТОВ (SDK v0.21, gemini-1.5-flash)
 // ============================================================
-const aiConversations = new Map();
+const aiConversations = new Map(); // jid → [{role, parts}[]]
 
 async function generateAIResponse(messageText, senderName, jid) {
     if (!genAI) return null;
     try {
-        const model = genAI.getGenerativeModel({ model: 'gemini-pro' });
-
         const customPrompt = db.getCustomPrompt(jid);
-        const sysMsg = customPrompt
-            ? `Сен Ернияздың виртуалды көмекшісісің. "${senderName}" үшін арнайы ереже бар: "${customPrompt}". Осыған қатаң бағын.`
+        const sysInstruction = customPrompt
+            ? `Сен Ернияздың виртуалды көмекшісісің. "${senderName}" үшін арнайы ереже: "${customPrompt}". Осыған қатаң бағын.`
             : `Сен Ернияздың виртуалды көмекшісісің. Ол қазір бос емес. Жауапты қысқа, мазмұнды, жеңіл әзілмен жаз. Адам қазақша жазса — қазақша, орысша — орысша, ағылшынша — ағылшынша.`;
 
-        if (!aiConversations.has(jid)) {
-            aiConversations.set(jid, [
-                { role: 'user',  parts: [{ text: sysMsg }] },
-                { role: 'model', parts: [{ text: 'Понял, буду следовать инструкции.' }] },
-            ]);
-        }
+        // Новый SDK: systemInstruction передаётся на уровне модели
+        const model = genAI.getGenerativeModel({
+            model: 'gemini-1.5-flash',
+            systemInstruction: sysInstruction,
+        });
+
+        // История диалога
+        if (!aiConversations.has(jid)) aiConversations.set(jid, []);
         const history = aiConversations.get(jid);
 
-        const chat    = model.startChat({ history });
-        const result  = await chat.sendMessage(messageText);
-        const aiText  = result.response.text();
+        const chat   = model.startChat({ history });
+        const result = await chat.sendMessage(messageText);
+        const aiText = result.response.text();
 
+        // Сохраняем историю (макс 20 реплик = 10 обменов)
         history.push({ role: 'user',  parts: [{ text: messageText }] });
         history.push({ role: 'model', parts: [{ text: aiText }] });
-        if (history.length > 22) history.splice(2, 2);
+        if (history.length > 20) history.splice(0, 2);
 
         db.incStat('ai_replies');
         return aiText;

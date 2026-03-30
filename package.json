@@ -9,7 +9,7 @@
     "start": "node --max-old-space-size=256 index.js"
   },
   "dependencies": {
-    "@google/generative-ai": "^0.2.1",
+    "@google/generative-ai": "^0.21.0",
     "@hapi/boom": "^10.0.1",
     "@whiskeysockets/baileys": "^6.7.9",
     "node-telegram-bot-api": "^0.66.0",
