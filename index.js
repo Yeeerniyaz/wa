@@ -503,7 +503,7 @@ async function generateAIResponse(messageText, senderName, jid) {
                 'X-Title': 'WhatsApp Bot'
             },
             body: JSON.stringify({
-                model: 'openrouter/free', // Авто-выбор любой доступной бесплатной модели, если кто-то перегружен
+                model: 'google/gemini-2.0-pro-exp-02-05:free', // Самая умная бесплатная модель на сегодня (Gemini 2.0 Pro)
                 messages: history,
                 temperature: 0.7,
                 max_tokens: 1024,
