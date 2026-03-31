@@ -27,11 +27,11 @@ class LocalDB {
         this.data = this._init();
         this._dirty = false;
 
-        setInterval(() => { if (this._dirty) { this._saveToDisk(); this._dirty = false; } }, 120_000);
+        setInterval(() => { if (this._dirty) { this._saveToDiskSync(); this._dirty = false; } }, 120_000);
         
         // Гарантированное сохранение при выходе
-        process.on('SIGINT', () => { this._saveToDisk(); process.exit(); });
-        process.on('SIGTERM', () => { this._saveToDisk(); process.exit(); });
+        process.on('SIGINT', () => { this._saveToDiskSync(); process.exit(); });
+        process.on('SIGTERM', () => { this._saveToDiskSync(); process.exit(); });
     }
 
     _init() {
@@ -86,13 +86,18 @@ class LocalDB {
         }
     }
 
-    _saveToDisk() {
-        fs.writeFile(DB_FILE, JSON.stringify(this.data, null, 2), err => {
-            if (err) console.error('❌ Ошибка записи БД:', err.message);
-        });
+    _saveToDiskSync() {
+        try {
+            const tempFile = DB_FILE + '.tmp';
+            // Сначала пишем во временный файл (атомарная запись для защиты от обрывов питания)
+            fs.writeFileSync(tempFile, JSON.stringify(this.data, null, 2));
+            fs.renameSync(tempFile, DB_FILE);
+        } catch (err) {
+            console.error('❌ Ошибка синхронной записи БД:', err.message);
+        }
     }
 
-    forceSave() { this._dirty = true; this._saveToDisk(); this._dirty = false; }
+    forceSave() { this._dirty = true; this._saveToDiskSync(); this._dirty = false; }
 
     log(msg) {
         const time = new Date().toLocaleString('ru-RU', { timeZone: 'Asia/Almaty' });
