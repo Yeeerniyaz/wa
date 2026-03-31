@@ -243,7 +243,16 @@ tgBot.on('message', async (tgMsg) => {
             const num = text.replace(/\D/g, '');
             if (!num) return sendToTelegram('❌ Некорректный номер.', cancelKeyboard);
             userStates.set(TG_CHAT_ID, { action: 'add_reply_step2', data: { num } });
-            await sendToTelegram(`📌 Отправь **текст ответа** для *+${num}*:`, cancelKeyboard); return;
+            const kb = {
+                reply_markup: {
+                    inline_keyboard: [
+                        [{text:'👋 Привет, я занят',callback_data:`set_p_def_1_${num}`}, {text:'❤️ Люблю + Занят',callback_data:`set_p_def_2_${num}`}],
+                        [{text:'💼 Официально',callback_data:`set_p_def_3_${num}`}, {text:'🤬 Игнор / Отказ',callback_data:`set_p_def_4_${num}`}],
+                        [{text:'❌ Отмена', callback_data:'cancel_action'}]
+                    ]
+                }
+            };
+            await sendToTelegram(`📌 Отправь **свой текст ответа** для *+${num}* или выбери готовый:`, kb); return;
         }
 
         if (state.action === 'add_reply_step2') {
@@ -260,7 +269,17 @@ tgBot.on('message', async (tgMsg) => {
             const num = text.replace(/\D/g, '');
             if (!num) return sendToTelegram('❌ Ошибка.', cancelKeyboard);
             userStates.set(TG_CHAT_ID, { action: 'add_prompt_step2', data: { num } });
-            await sendToTelegram(`🧠 Отправь **инструкцию ИИ** для *+${num}*:`, cancelKeyboard); return;
+            const kb = {
+                reply_markup: {
+                    inline_keyboard: [
+                        [{text:'🤝 Бро (Друг)',callback_data:`set_p_ai_1_${num}`}, {text:'💼 Формально (Коллега)',callback_data:`set_p_ai_2_${num}`}],
+                        [{text:'❤️ Романтика (Любовь)',callback_data:`set_p_ai_3_${num}`}, {text:'🙅‍♂️ Холодно (Отшивать)',callback_data:`set_p_ai_4_${num}`}],
+                        [{text:'🇰🇿 Қазақша',callback_data:`set_p_ai_5_${num}`}, {text:'🤡 Гуль / Тролль',callback_data:`set_p_ai_6_${num}`}],
+                        [{text:'❌ Отмена', callback_data:'cancel_action'}]
+                    ]
+                }
+            };
+            await sendToTelegram(`🧠 Отправь **свою инструкцию ИИ** для *+${num}* или выбери шаблон:`, kb); return;
         }
 
         if (state.action === 'add_prompt_step2') {
@@ -445,7 +464,20 @@ tgBot.on('callback_query', async (query) => {
 
     // --- СТАРЫЕ ДЕЙСТВИЯ (Остались без изменений) ---
     if (action === 'ask_cooldown') { userStates.set(TG_CHAT_ID, { action: 'set_cooldown' }); sendToTelegram('⏱ Введите кулдаун (сек):', cancelKeyboard); tgBot.answerCallbackQuery(query.id); }
-    else if (action === 'ask_default_text') { userStates.set(TG_CHAT_ID, { action: 'set_default_reply' }); sendToTelegram('💬 Введите базовый автоответ:', cancelKeyboard); tgBot.answerCallbackQuery(query.id); }
+    else if (action === 'ask_default_text') { 
+        userStates.set(TG_CHAT_ID, { action: 'set_default_reply' }); 
+        const kb = {
+            reply_markup: {
+                inline_keyboard: [
+                    [{text:'🚗 Я за рулем', callback_data:'set_def_tpl_1'}, {text:'😴 Я сплю', callback_data:'set_def_tpl_2'}],
+                    [{text:'⏳ Занят, потом', callback_data:'set_def_tpl_3'}, {text:'📞 Позвоните', callback_data:'set_def_tpl_4'}],
+                    [{text:'❌ Отмена', callback_data:'cancel_action'}]
+                ]
+            }
+        };
+        sendToTelegram('💬 Введите свой текст базового автоответа или выберите шаблон:', kb); 
+        tgBot.answerCallbackQuery(query.id); 
+    }
     else if (action === 'ask_reply_add') { userStates.set(TG_CHAT_ID, { action: 'add_reply_step1' }); sendToTelegram('📌 Введите номер абонента для автоответа:', cancelKeyboard); tgBot.answerCallbackQuery(query.id); }
     else if (action === 'ask_reply_del') { userStates.set(TG_CHAT_ID, { action: 'del_reply' }); sendToTelegram('➖ Введите номер для удаления автоответа:', cancelKeyboard); tgBot.answerCallbackQuery(query.id); }
     else if (action === 'list_replies') {
@@ -462,10 +494,72 @@ tgBot.on('callback_query', async (query) => {
     }
     else if (action === 'ask_ai_reset') { userStates.set(TG_CHAT_ID, { action: 'reset_ai' }); sendToTelegram('🔄 Введите номер для очистки контекста ИИ:', cancelKeyboard); tgBot.answerCallbackQuery(query.id); }
     else if (action === 'show_ai_templates') {
-        const tpl = { reply_markup: { inline_keyboard: [ [{text:'🚗 За рулем',callback_data:'set_ai_template_1'}], [{text:'✏️ Свой текст',callback_data:'ask_global_ai'}], [{text:'❌ Выключить для всех',callback_data:'disable_global_ai'}], [{text:'🔙 Назад',callback_data:'menu_ai_settings'}] ] } };
+        const tpl = { reply_markup: { inline_keyboard: [ 
+            [{text:'🚗 За рулем',callback_data:'set_ai_template_1'}, {text:'😴 Сплю',callback_data:'set_ai_template_2'}], 
+            [{text:'💼 Совещание',callback_data:'set_ai_template_3'}, {text:'🏋️‍♂️ В зале',callback_data:'set_ai_template_4'}],
+            [{text:'🍽 На обеде',callback_data:'set_ai_template_5'}, {text:'🎮 Играю',callback_data:'set_ai_template_6'}],
+            [{text:'👍 Соглашаться',callback_data:'set_ai_template_7'}, {text:'🙅‍♂️ Негатив',callback_data:'set_ai_template_8'}],
+            [{text:'✏️ Свой текст',callback_data:'ask_global_ai'}], 
+            [{text:'❌ Выключить ИИ для всех',callback_data:'disable_global_ai'}], 
+            [{text:'🔙 Назад',callback_data:'menu_ai_settings'}] 
+        ] } };
         tgBot.editMessageText(`🌍 *Глобальный ИИ*\nТекущий: _${db.getSettings().globalAIPrompt || 'Отключен'}_`, { chat_id: query.message.chat.id, message_id: query.message.message_id, parse_mode: 'Markdown', ...tpl });
     }
-    else if (action === 'set_ai_template_1') { db.setSetting('globalAIPrompt', 'Ернияз за рулем.'); db.forceSave(); tgBot.answerCallbackQuery(query.id, {text:'Применено'}); }
+    else if (action.startsWith('set_ai_template_')) {
+        const t = action.split('_')[3];
+        const templates = {
+            '1': 'Я сейчас за рулем и не могу печатать. Отвечу, как припаркуюсь.',
+            '2': 'Я сейчас сплю и не вижу сообщений.',
+            '3': 'У меня важное рабочее совещание, я очень занят.',
+            '4': 'Я на жесткой тренировке в зале, перезвоню позже.',
+            '5': 'Я кушаю, приятного мне аппетита. Не отвлекать.',
+            '6': 'Я играю в соревновательную игру и потею, не могу говорить.',
+            '7': 'Просто соглашайся со всем, что говорит собеседник, но коротко.',
+            '8': 'Отвечай грубо, скажи что ты обиделся и не хочешь общаться.',
+        };
+        db.setSetting('globalAIPrompt', templates[t]); 
+        db.forceSave(); 
+        tgBot.answerCallbackQuery(query.id, {text:'Шаблон применен!'}); 
+        tgBot.editMessageText(`✅ Глобальный шаблон применен!\n\nИИ теперь говорит: _${templates[t]}_`, { chat_id: query.message.chat.id, message_id: query.message.message_id, parse_mode: 'Markdown', reply_markup: { inline_keyboard: [[{text:'🔙 Назад',callback_data:'show_ai_templates'}]] } });
+    }
+    else if (action.startsWith('set_def_tpl_')) {
+        const id = action.split('_')[3];
+        const t = {
+            '1': 'Я сейчас за рулем. Отвечу, как припаркуюсь.',
+            '2': 'Я сейчас сплю. Прочитаю утром.',
+            '3': 'Я сейчас очень занят. Отвечу позже.',
+            '4': 'Я не могу сейчас писать. Пожалуйста, позвоните мне если срочно.'
+        };
+        db.setSetting('defaultAutoReply', t[id]); db.forceSave();
+        tgBot.editMessageText(`✅ Базовый текст обновлён на:\n_${t[id]}_`, { chat_id: query.message.chat.id, message_id: query.message.message_id, parse_mode: 'Markdown' });
+        userStates.delete(TG_CHAT_ID); tgBot.answerCallbackQuery(query.id);
+    }
+    else if (action.startsWith('set_p_ai_')) {
+        const parts = action.split('_'); const id = parts[3]; const num = parts[4];
+        const t = {
+            '1': 'Это мой хороший друг. Общайся с ним тепло, дружелюбно, используй бро, братан. Соглашайся на встречи, кидай смешные реакции.',
+            '2': 'Это коллега по работе. Общайся строго официально, по делу, без смайликов и эмоций. Коротко и ясно.',
+            '3': 'Это моя любовь. Отвечай очень нежно, с любовью, используй много милых смайликов и сердечек.',
+            '4': 'Это спамер или неприятный человек. Отвечай максимально холодно на "отвали", говори что не интересно, или просто переводи тему.',
+            '5': 'Жауапты тек Қазақ тілінде қайтар. Өте әдепті және қысқа жауап бер.',
+            '6': 'Отвечай на все сообщения постиронией, шути, используй сарказм, веди себя как аниме-псих, не давай прямых ответов.'
+        };
+        db.setCustomPrompt(num, t[id]); if (waModule) resetAIHistory(waModule.toWAJid(num));
+        tgBot.editMessageText(`✅ ИИ правило для *+${num}* сохранено:\n_${t[id]}_`, { chat_id: query.message.chat.id, message_id: query.message.message_id, parse_mode: 'Markdown' });
+        userStates.delete(TG_CHAT_ID); tgBot.answerCallbackQuery(query.id);
+    }
+    else if (action.startsWith('set_p_def_')) {
+        const parts = action.split('_'); const id = parts[3]; const num = parts[4];
+        const t = {
+            '1': 'Привет! Я сейчас немного занят, напишу тебе чуть позже обязательно.',
+            '2': 'Я тоже тебя очень сильно люблю! Скоро освобожусь и напишу 😘',
+            '3': 'Здравствуйте. Я сейчас не могу ответить. Пожалуйста, напишите мне на рабочий номер или перезвоните позже.',
+            '4': 'Пожалуйста, больше не пишите мне.'
+        };
+        db.setCustomReply(num, t[id]);
+        tgBot.editMessageText(`✅ Ответ для *+${num}* сохранен:\n_${t[id]}_`, { chat_id: query.message.chat.id, message_id: query.message.message_id, parse_mode: 'Markdown' });
+        userStates.delete(TG_CHAT_ID); tgBot.answerCallbackQuery(query.id);
+    }
     else if (action === 'ask_global_ai') { userStates.set(TG_CHAT_ID, { action: 'set_global_ai' }); sendToTelegram('🌍 Введите глобальное правило ИИ:', cancelKeyboard); tgBot.answerCallbackQuery(query.id); }
     else if (action === 'disable_global_ai') { db.setSetting('globalAIPrompt', ''); db.forceSave(); tgBot.answerCallbackQuery(query.id, {text:'Отключено'}); }
     else if (action === 'ask_send_wa') { userStates.set(TG_CHAT_ID, { action: 'send_wa_step1' }); sendToTelegram('📤 Кому пишем? Введите номер:', cancelKeyboard); tgBot.answerCallbackQuery(query.id); }
