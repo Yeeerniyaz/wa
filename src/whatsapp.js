@@ -86,11 +86,14 @@ export async function sendTypingAndMessage(jid, content, options = {}) {
 }
 
 // ==========================================
-// ВОРКЕР ПЛАНИРОВЩИКА (Скрытый таймер)
+// ВОРКЕР ПЛАНИРОВЩИКА И ДОЛБЕЖНИКА (Скрытый таймер)
 // ==========================================
 function startSchedulerWorker() {
     setInterval(async () => {
         if (!sock) return;
+        const now = Date.now();
+
+        // 1. Одиночные запланированные сообщения (Планировщик)
         const pending = db.getPendingScheduled();
         for (const task of pending) {
             try {
@@ -101,7 +104,22 @@ function startSchedulerWorker() {
                 db.log(`❌ [ПЛАНИРОВЩИК] Ошибка отправки: ${err.message}`);
             }
         }
-    }, 15000); // Просыпается каждые 15 секунд и проверяет таймеры
+
+        // 2. Циклические массовые рассылки до ответа (Режим Долбежник)
+        const bomberTasks = db.getBomberTasks();
+        for (const [num, task] of Object.entries(bomberTasks)) {
+            if (now >= task.nextRun) {
+                const textToSend = task.texts[task.currentIndex];
+                try {
+                    await enqueueWA(() => sendTypingAndMessage(toWAJid(num), { text: textToSend }));
+                    db.updateBomberProgress(num);
+                    db.log(`💣 [ДОЛБЕЖНИК] Удар по +${num} (Текст ${task.currentIndex === 0 ? task.texts.length : task.currentIndex}/${task.texts.length})`);
+                } catch (err) {
+                    db.log(`❌ [ДОЛБЕЖНИК] Ошибка по +${num}: ${err.message}`);
+                }
+            }
+        }
+    }, 15000); // Просыпается каждые 15 секунд и проверяет обе очереди
 }
 
 export async function connectToWhatsApp() {
@@ -130,7 +148,7 @@ export async function connectToWhatsApp() {
 
         if (connection === 'open') {
             db.log('🚀 WhatsApp подключён!');
-            await sendToTelegram('🚀 *WhatsApp подключён!*\nЯдро v2.1: Планировщик и Макросы активированы.');
+            await sendToTelegram('🚀 *WhatsApp подключён!*\nЯдро v2.3: Боевой режим «Долбежник» активирован.');
 
             if (db.getSettings().alwaysOnline) {
                 setInterval(async () => {
@@ -186,6 +204,18 @@ async function handleMessage(msg) {
     const mediaType = getMsgMediaType(msg);
     const settings = db.getSettings();
     const pushName = msg.pushName || toNum(jid);
+    const rawNum = jid.split(':')[0].split('@')[0].replace(/\D/g, '');
+
+    // ==========================================
+    // ПРЕРЫВАНИЕ ДОЛБЕЖНИКА (Interrupt)
+    // ==========================================
+    if (!msg.key.fromMe) {
+        const isStopped = db.stopBomber(rawNum);
+        if (isStopped) {
+            db.log(`🎯 Цель +${rawNum} ответила. Долбежник отключен.`);
+            await sendToTelegram(`🎯 *БОЕВАЯ ТРЕВОГА: ЦЕЛЬ ОТВЕТИЛА!*\nДолбежник для \`+${rawNum}\` автоматически отключен.\n\n💬 Сообщение: _${text.slice(0, 150) || '[Медиа]'}_`);
+        }
+    }
 
     // ==========================================
     // 1. МАКРОСЫ (Работают, когда пишешь ТЫ со своего телефона/ПК)
@@ -211,9 +241,6 @@ async function handleMessage(msg) {
     const reply = async (content) => enqueueWA(() => {
         try { return sendTypingAndMessage(jid, content, { quoted: msg }); } catch(e){}
     });
-
-    // Безопасно достаем чистый номер/id (отрезая номер связанного устройства :1 и домены @s.whatsapp)
-    const rawNum = jid.split(':')[0].split('@')[0].replace(/\D/g, '');
 
     // ==========================================
     // ПРИВАТНОСТЬ И АУДИТОРИЯ (Черные списки)

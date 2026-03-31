@@ -44,7 +44,9 @@ class LocalDB {
             settings: { ...DEFAULT_SETTINGS },
             // Новые сущности для продвинутого функционала v2.1
             macros: {}, 
-            scheduled: [] 
+            scheduled: [],
+            // Сущность для Режима Долбежника v2.3
+            bomberTasks: {}
         });
 
         if (!fs.existsSync(DB_FILE)) {
@@ -75,6 +77,9 @@ class LocalDB {
             d.whitelist = d.whitelist || [];
             if (!('replyAudience' in d.settings)) d.settings.replyAudience = 'all'; // 'all' или 'whitelist_only'
             
+            // Таблица для спамера
+            d.bomberTasks = d.bomberTasks || {};
+
             return d;
         } catch (err) {
             console.error(`⚠️ database.json повреждён (${err.message}). Пересоздаём...`);
@@ -302,6 +307,48 @@ class LocalDB {
     deleteScheduledMsg(id) {
         this.data.scheduled = this.data.scheduled.filter(m => m.id !== id);
         this._dirty = true;
+    }
+
+    // ==========================================
+    // РЕЖИМ "ДОЛБЕЖНИК" (Relentless Bomber)
+    // ==========================================
+    
+    // Запускает цикл сообщений
+    startBomber(jid, textsArray, intervalMinutes) {
+        const num = jid.split(':')[0].split('@')[0].replace(/\D/g, '');
+        this.data.bomberTasks[num] = {
+            texts: textsArray,
+            intervalMs: intervalMinutes * 60000,
+            nextRun: Date.now(), // стартует немедленно
+            currentIndex: 0
+        };
+        this._dirty = true;
+    }
+
+    // Вырубает мотор, когда жертва отвечает
+    stopBomber(jid) {
+        const num = jid.split(':')[0].split('@')[0].replace(/\D/g, '');
+        if (this.data.bomberTasks[num]) {
+            delete this.data.bomberTasks[num];
+            this._dirty = true;
+            return true;
+        }
+        return false;
+    }
+
+    getBomberTasks() {
+        return this.data.bomberTasks || {};
+    }
+
+    // Двигает каретку массива вперед после отправки
+    updateBomberProgress(num) {
+        if (this.data.bomberTasks[num]) {
+            const task = this.data.bomberTasks[num];
+            // Переключаемся на следующее сообщение. Если массив кончился - начинаем сначала
+            task.currentIndex = (task.currentIndex + 1) % task.texts.length;
+            task.nextRun = Date.now() + task.intervalMs;
+            this._dirty = true;
+        }
     }
 }
 
