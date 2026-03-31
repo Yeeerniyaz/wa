@@ -212,7 +212,8 @@ async function handleMessage(msg) {
         try { return sendTypingAndMessage(jid, content, { quoted: msg }); } catch(e){}
     });
 
-    const rawNum = jid.replace(/\D/g, '');
+    // Безопасно достаем чистый номер/id (отрезая номер связанного устройства :1 и домены @s.whatsapp)
+    const rawNum = jid.split(':')[0].split('@')[0].replace(/\D/g, '');
 
     // ==========================================
     // ПРИВАТНОСТЬ И АУДИТОРИЯ (Черные списки)

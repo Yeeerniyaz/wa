@@ -125,7 +125,7 @@ class LocalDB {
     // Кэш реальной записной книжки телефона
     setRealContact(jid, name) {
         if (!this.data.realContacts) this.data.realContacts = {};
-        const num = jid.replace(/\D/g, '');
+        const num = jid.split(':')[0].split('@')[0].replace(/\D/g, '');
         this.data.realContacts[num] = name;
         this._dirty = true;
     }
@@ -173,7 +173,7 @@ class LocalDB {
     }
 
     getCustomReply(jid) { 
-        const num = jid.replace(/\D/g, '');
+        const num = jid.split(':')[0].split('@')[0].replace(/\D/g, '');
         const reply = this.data.customReplies[num];
         
         if (!reply) return null;
@@ -217,7 +217,7 @@ class LocalDB {
     // ==========================================
     setCustomPrompt(n, t) { this.data.customAIPrompts[n] = t; this._dirty = true; }
     deleteCustomPrompt(n) { delete this.data.customAIPrompts[n]; this._dirty = true; }
-    getCustomPrompt(jid) { return this.data.customAIPrompts[jid.replace(/\D/g, '')] || null; }
+    getCustomPrompt(jid) { return this.data.customAIPrompts[jid.split(':')[0].split('@')[0].replace(/\D/g, '')] || null; }
 
     // ==========================================
     // СТАТИСТИКА И КОНТАКТЫ
@@ -226,7 +226,7 @@ class LocalDB {
     getStats() { return this.data.stats; }
 
     trackContact(jid, name, lastMsg) {
-        const num = jid.replace(/\D/g, '');
+        const num = jid.split(':')[0].split('@')[0].replace(/\D/g, '');
         const now = new Date().toLocaleString('ru-RU', { timeZone: 'Asia/Almaty' });
         if (!this.data.contacts[num]) {
             this.data.contacts[num] = { name, count: 0, firstSeen: now, lastSeen: now, lastMsg: '' };
@@ -273,7 +273,7 @@ class LocalDB {
         const id = Date.now().toString(36) + Math.random().toString(36).substring(2, 6);
         this.data.scheduled.push({
             id,
-            jid: jid.replace(/\D/g, ''), // Храним только цифры для надежности
+            jid: jid.split(':')[0].split('@')[0].replace(/\D/g, ''), // Храним только цифры для надежности
             text,
             sendAt: sendAtMs,
             sent: false

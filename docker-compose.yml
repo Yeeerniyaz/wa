@@ -16,7 +16,10 @@ services:
         reservations:
           memory: 64M
     volumes:
-      # Жесткая привязка ПАПКИ на сервере к ПАПКЕ в контейнере (Самый надежный метод)
-      - /opt/wa_bot/data:/app/data
+      - wa_data:/app/data
     stdin_open: true
     tty: true
+
+volumes:
+  wa_data:
+    name: wa_bot_persistent_data
