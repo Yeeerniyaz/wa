@@ -12,10 +12,15 @@ services:
     deploy:
       resources:
         limits:
-          memory: 350M   # Baileys без Chrome — достаточно 256MB
+          memory: 350M
         reservations:
           memory: 64M
     volumes:
-      - /opt/wa_bot/data:/app/data       # Единая папка для сессии и БД (решает баг Docker)
-    stdin_open: true   # для первоначального QR-кода
+      - wa_data:/app/data       # Меняем жесткую ссылку на Именованный Том
+    stdin_open: true
     tty: true
+
+# Объявляем защищенный том для Portainer
+volumes:
+  wa_data:
+    name: wa_bot_persistent_data

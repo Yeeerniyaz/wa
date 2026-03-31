@@ -295,7 +295,7 @@ tgBot.on('message', async (tgMsg) => {
         if (state.action === 'send_wa_step2') {
             if (!waModule) return sendToTelegram('❌ Ядро WA еще грузится...');
             try {
-                await waModule.enqueueWA(() => waModule.sock.sendMessage(waModule.toWAJid(state.data.num), { text }));
+                await waModule.enqueueWA(() => waModule.sendTypingAndMessage(waModule.toWAJid(state.data.num), { text }));
                 sendToTelegram(`✅ Успешно доставлено!`); db.incStat('manual_sends');
             } catch (err) { sendToTelegram(`❌ Ошибка отправки: ${err.message}`); }
             userStates.delete(TG_CHAT_ID); return;
@@ -361,7 +361,7 @@ tgBot.on('message', async (tgMsg) => {
                     const buffer = Buffer.from(await (await fetch(fileLink)).arrayBuffer());
                     await waModule.enqueueWA(() => waModule.sock.sendMessage(waJid, { audio: buffer, mimetype: 'audio/ogg; codecs=opus', ptt: true }));
                 } else if (tgMsg.text) {
-                    await waModule.enqueueWA(() => waModule.sock.sendMessage(waJid, { text: tgMsg.text }));
+                    await waModule.enqueueWA(() => waModule.sendTypingAndMessage(waJid, { text: tgMsg.text }));
                 }
                 await tgBot.sendMessage(TG_CHAT_ID, '✅ Доставлено', { reply_to_message_id: tgMsg.message_id });
                 db.incStat('bridge_sends');

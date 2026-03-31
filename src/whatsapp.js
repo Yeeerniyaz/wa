@@ -64,6 +64,28 @@ async function processQueue() {
 }
 
 // ==========================================
+// ИМИТАЦИЯ ЧЕЛОВЕКА (Анти-бан)
+// ==========================================
+export async function sendTypingAndMessage(jid, content, options = {}) {
+    if (!sock) return;
+    
+    // Если мы отправляем текст (не картинку и не кнопку), симулируем набор текста
+    if (content.text) {
+        try {
+            await sock.sendPresenceUpdate('composing', jid);
+            // Скорость "печати" примерно 1 символ = 40мс. Минимум полторы секунды, максимум 8 секунд.
+            const typeTimeMs = Math.max(1500, Math.min(8000, content.text.length * 40));
+            await new Promise(resolve => setTimeout(resolve, typeTimeMs));
+            await sock.sendPresenceUpdate('paused', jid);
+        } catch (e) {
+            db.log(`⚠️ Ошибка статуса presence: ${e.message}`);
+        }
+    }
+    
+    return sock.sendMessage(jid, content, options);
+}
+
+// ==========================================
 // ВОРКЕР ПЛАНИРОВЩИКА (Скрытый таймер)
 // ==========================================
 function startSchedulerWorker() {
@@ -72,7 +94,7 @@ function startSchedulerWorker() {
         const pending = db.getPendingScheduled();
         for (const task of pending) {
             try {
-                await enqueueWA(() => sock.sendMessage(toWAJid(task.jid), { text: task.text }));
+                await enqueueWA(() => sendTypingAndMessage(toWAJid(task.jid), { text: task.text }));
                 db.markScheduledSent(task.id);
                 db.log(`⏰ [ПЛАНИРОВЩИК] Отправлено сообщение абоненту +${task.jid}`);
             } catch (err) {
@@ -167,8 +189,8 @@ async function handleMessage(msg) {
                 // Пытаемся удалить твой короткий код ("Удалить у всех")
                 try { await sock.sendMessage(jid, { delete: msg.key }); } catch (e) {}
                 
-                // Отправляем развернутый длинный текст
-                await enqueueWA(() => sock.sendMessage(jid, { text: macroText }));
+                // Отправляем развернутый длинный текст (симулируя печать)
+                await enqueueWA(() => sendTypingAndMessage(jid, { text: macroText }));
                 db.log(`🪄 Сработал макрос: ${textLow} -> ${pushName}`);
             }
         }
@@ -178,7 +200,9 @@ async function handleMessage(msg) {
     db.incStat('messages_received');
     db.log(`📨 ${isGroup(jid) ? '[Группа]' : '[Личка]'} ${pushName}: ${text.slice(0, 50) || `[${mediaType}]`}`);
 
-    const reply = (content) => enqueueWA(() => sock.sendMessage(jid, content, { quoted: msg }));
+    const reply = async (content) => enqueueWA(() => {
+        try { return sendTypingAndMessage(jid, content, { quoted: msg }); } catch(e){}
+    });
 
     // ==========================================
     // 2. БАЗОВЫЕ КОМАНДЫ (Работают и в группах)
