@@ -89,17 +89,54 @@ const getMainMenu = () => {
                     { text: '🧠 Настройки ИИ', callback_data: 'menu_ai_settings' },
                 ],
                 [
+                    { text: '🛡️ Приватность (Доступ)', callback_data: 'menu_privacy' },
                     { text: '📤 Написать в WA', callback_data: 'ask_send_wa' },
-                    { text: '👤 Досье на контакт', callback_data: 'ask_stat' },
                 ],
                 [
+                    { text: '👤 Досье на контакт', callback_data: 'ask_stat' },
                     { text: '📊 Топ-10', callback_data: 'show_top' },
+                ],
+                [
                     { text: '💻 Инфо скрипта', callback_data: 'sys_status' },
                 ],
             ],
         },
     };
 };
+
+const getPrivacyMenu = () => {
+    const s = db.getSettings();
+    const modeText = s.replyAudience === 'whitelist_only' ? '🔴 Игнорировать всех (Кроме VIP/настроек)' : '🟢 Отвечать ВСЕМ (если нет ЧС)';
+    return {
+        reply_markup: {
+            inline_keyboard: [
+                [{ text: `Режим: ${modeText}`, callback_data: 'toggle_audienceMode' }],
+                [{ text: '🌟 Белый список (VIP)', callback_data: 'menu_whitelist' }, { text: '🚫 Черный список', callback_data: 'menu_blacklist' }],
+                [{ text: '🔙 Назад в меню', callback_data: 'back_to_menu' }]
+            ]
+        }
+    };
+};
+
+const getWhitelistMenu = () => ({
+    reply_markup: {
+        inline_keyboard: [
+            [{ text: '➕ Добавить VIP', callback_data: 'ask_whitelist_add' }, { text: '➖ Удалить VIP', callback_data: 'ask_whitelist_del' }],
+            [{ text: '📋 Список VIP', callback_data: 'list_whitelist' }],
+            [{ text: '🔙 Назад к Приватности', callback_data: 'menu_privacy' }]
+        ]
+    }
+});
+
+const getBlacklistMenu = () => ({
+    reply_markup: {
+        inline_keyboard: [
+            [{ text: '➕ В Черный список', callback_data: 'ask_blacklist_add' }, { text: '➖ Убрать из ЧС', callback_data: 'ask_blacklist_del' }],
+            [{ text: '📋 Показать ЧС', callback_data: 'list_blacklist' }],
+            [{ text: '🔙 Назад к Приватности', callback_data: 'menu_privacy' }]
+        ]
+    }
+});
 
 const getMacrosMenu = () => ({
     reply_markup: {
@@ -220,6 +257,24 @@ tgBot.on('message', async (tgMsg) => {
             await sendToTelegram(`🗑 Макрос \`${text}\` удалён.`);
             userStates.delete(TG_CHAT_ID);
             return;
+        }
+
+        // --- ПРИВАТНОСТЬ И АУДИТОРИЯ ---
+        if (state.action === 'add_whitelist') {
+            const num = text.replace(/\D/g, '');
+            if (!num) return sendToTelegram('❌ Ошибка. Жду номер:', cancelKeyboard);
+            db.addWhitelist(num); sendToTelegram(`🌟 +${num} добавлен в VIP-список.`); userStates.delete(TG_CHAT_ID); return;
+        }
+        if (state.action === 'del_whitelist') {
+            const num = text.replace(/\D/g, ''); db.remWhitelist(num); sendToTelegram(`🗑 +${num} удален из VIP-списка.`); userStates.delete(TG_CHAT_ID); return;
+        }
+        if (state.action === 'add_blacklist') {
+            const num = text.replace(/\D/g, '');
+            if (!num) return sendToTelegram('❌ Ошибка. Жду номер:', cancelKeyboard);
+            db.addBlacklist(num); sendToTelegram(`🚫 +${num} отправлен в Черный список. Бот будет его игнорировать.`); userStates.delete(TG_CHAT_ID); return;
+        }
+        if (state.action === 'del_blacklist') {
+            const num = text.replace(/\D/g, ''); db.remBlacklist(num); sendToTelegram(`♻️ +${num} вызволен из Черного списка.`); userStates.delete(TG_CHAT_ID); return;
         }
 
         // --- СТАРЫЕ СОСТОЯНИЯ ---
@@ -421,9 +476,41 @@ tgBot.on('callback_query', async (query) => {
     // --- ТУМБЛЕРЫ ---
     if (action.startsWith('toggle_')) {
         const key = action.replace('toggle_', '');
-        db.toggleSetting(key); db.forceSave();
-        await tgBot.editMessageReplyMarkup(getMainMenu().reply_markup, { chat_id: query.message.chat.id, message_id: query.message.message_id });
+        if (key === 'audienceMode') {
+            const current = db.getAudienceMode();
+            db.setAudienceMode(current === 'all' ? 'whitelist_only' : 'all');
+            await tgBot.editMessageReplyMarkup(getPrivacyMenu().reply_markup, { chat_id: query.message.chat.id, message_id: query.message.message_id });
+        } else {
+            db.toggleSetting(key); db.forceSave();
+            await tgBot.editMessageReplyMarkup(getMainMenu().reply_markup, { chat_id: query.message.chat.id, message_id: query.message.message_id });
+        }
         await tgBot.answerCallbackQuery(query.id, { text: '✅ Переключено' }); return;
+    }
+
+    // --- АУДИТОРИЯ И ПРИВАТНОСТЬ ---
+    if (action === 'menu_privacy') {
+        await tgBot.editMessageText('🛡️ *Управление Приватностью*\nНастрой, кому бот может отвечать, добавь людей в Черный список или перейди в Тихий Режим.', { chat_id: query.message.chat.id, message_id: query.message.message_id, parse_mode: 'Markdown', ...getPrivacyMenu() }); return;
+    }
+    if (action === 'menu_whitelist') {
+        await tgBot.editMessageText('🌟 *VIP-список (Белый)*\nЭти люди получают Глобальные ответы даже в Режиме Тишины.', { chat_id: query.message.chat.id, message_id: query.message.message_id, parse_mode: 'Markdown', ...getWhitelistMenu() }); return;
+    }
+    if (action === 'menu_blacklist') {
+        await tgBot.editMessageText('🚫 *Черный список (Игнор)*\nБот ВООБЩЕ не будет читать их сообщения и брать в статистику.', { chat_id: query.message.chat.id, message_id: query.message.message_id, parse_mode: 'Markdown', ...getBlacklistMenu() }); return;
+    }
+    
+    // Кнопки ЧС / БС
+    if (action === 'ask_whitelist_add') { userStates.set(TG_CHAT_ID, { action: 'add_whitelist' }); await sendToTelegram('🌟 Введи номер для добавления в VIP:', cancelKeyboard); tgBot.answerCallbackQuery(query.id); return; }
+    if (action === 'ask_whitelist_del') { userStates.set(TG_CHAT_ID, { action: 'del_whitelist' }); await sendToTelegram('➖ Введи номер для удаления из VIP:', cancelKeyboard); tgBot.answerCallbackQuery(query.id); return; }
+    if (action === 'list_whitelist') {
+        const w = db.getWhitelist(); if (!w.length) return tgBot.answerCallbackQuery(query.id, { text: 'VIP пуст', show_alert: true });
+        await sendToTelegram('🌟 *VIP-список:*\n' + w.map(n => `• +${n}`).join('\n')); tgBot.answerCallbackQuery(query.id); return;
+    }
+    
+    if (action === 'ask_blacklist_add') { userStates.set(TG_CHAT_ID, { action: 'add_blacklist' }); await sendToTelegram('🚫 Введи номер для Черного списка:', cancelKeyboard); tgBot.answerCallbackQuery(query.id); return; }
+    if (action === 'ask_blacklist_del') { userStates.set(TG_CHAT_ID, { action: 'del_blacklist' }); await sendToTelegram('➖ Введи номер для амнистии (удаление из ЧС):', cancelKeyboard); tgBot.answerCallbackQuery(query.id); return; }
+    if (action === 'list_blacklist') {
+        const b = db.getBlacklist(); if (!b.length) return tgBot.answerCallbackQuery(query.id, { text: 'ЧС пуст', show_alert: true });
+        await sendToTelegram('🚫 *Черный список:*\n' + b.map(n => `• +${n}`).join('\n')); tgBot.answerCallbackQuery(query.id); return;
     }
 
     // --- КНОПКИ ПЛАНИРОВЩИКА ---

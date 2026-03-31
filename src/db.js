@@ -70,6 +70,11 @@ class LocalDB {
             d.macros = d.macros || {};
             d.scheduled = d.scheduled || [];
             
+            // Новые сущности Приватности и Аудитории v2.2
+            d.blacklist = d.blacklist || [];
+            d.whitelist = d.whitelist || [];
+            if (!('replyAudience' in d.settings)) d.settings.replyAudience = 'all'; // 'all' или 'whitelist_only'
+            
             return d;
         } catch (err) {
             console.error(`⚠️ database.json повреждён (${err.message}). Пересоздаём...`);
@@ -105,6 +110,28 @@ class LocalDB {
     getSettings() { return this.data.settings; }
     toggleSetting(k) { this.data.settings[k] = !this.data.settings[k]; this._dirty = true; return this.data.settings; }
     setSetting(k, v) { this.data.settings[k] = v; this._dirty = true; }
+
+    // ==========================================
+    // ПРИВАТНОСТЬ И АУДИТОРИЯ (VIP / ИГНОР)
+    // ==========================================
+    getAudienceMode() { return this.data.settings.replyAudience || 'all'; }
+    setAudienceMode(m) { this.data.settings.replyAudience = m; this._dirty = true; }
+    
+    getBlacklist() { return this.data.blacklist || []; }
+    addBlacklist(n) { 
+        if (!this.data.blacklist) this.data.blacklist = [];
+        if (!this.data.blacklist.includes(n)) { this.data.blacklist.push(n); this._dirty = true; }
+    }
+    remBlacklist(n) { this.data.blacklist = (this.data.blacklist || []).filter(x => x !== n); this._dirty = true; }
+    isBlacklist(n) { return (this.data.blacklist || []).includes(n); }
+    
+    getWhitelist() { return this.data.whitelist || []; }
+    addWhitelist(n) { 
+        if (!this.data.whitelist) this.data.whitelist = [];
+        if (!this.data.whitelist.includes(n)) { this.data.whitelist.push(n); this._dirty = true; }
+    }
+    remWhitelist(n) { this.data.whitelist = (this.data.whitelist || []).filter(x => x !== n); this._dirty = true; }
+    isWhitelist(n) { return (this.data.whitelist || []).includes(n); }
 
     // ==========================================
     // КАСТОМНЫЕ ОТВЕТЫ (ОБЫЧНЫЕ И ПО ВРЕМЕНИ)

@@ -204,6 +204,16 @@ async function handleMessage(msg) {
         try { return sendTypingAndMessage(jid, content, { quoted: msg }); } catch(e){}
     });
 
+    const rawNum = jid.replace(/\D/g, '');
+
+    // ==========================================
+    // ПРИВАТНОСТЬ И АУДИТОРИЯ (Черные списки)
+    // ==========================================
+    if (db.isBlacklist(rawNum)) {
+        db.log(`🚫 ${pushName} в Черном списке. Игнорируем.`);
+        return; // Полный игнор, даже не пересылаем в ТГ
+    }
+
     // ==========================================
     // 2. БАЗОВЫЕ КОМАНДЫ (Работают и в группах)
     // ==========================================
@@ -230,14 +240,24 @@ async function handleMessage(msg) {
 
         let autoReplied = false;
         
-        // Получаем кастомный ответ (в нем УЖЕ работает логика по времени суток из db.js)
+        // Индивидуальные настройки для человека
         const customReply = db.getCustomReply(jid);
-        // Индивидуальное правило ИИ для этого человека
         const personalPrompt = db.getCustomPrompt(jid);
+        const hasPersonalRule = !!(customReply || personalPrompt);
+        
+        // Разрешен ли автоответ в принципе по политике аудитории?
+        const isWhitelisted = db.isWhitelist(rawNum);
+        const audienceMode = db.getAudienceMode(); // 'all' или 'whitelist_only'
+        let canTalk = true;
+        
+        if (audienceMode === 'whitelist_only' && !isWhitelisted && !hasPersonalRule) {
+            canTalk = false; // Режим тишины включен, и у абонента нет VIP-статуса или личных правил.
+            db.log(`🤫 Режим тишины: игнорируем +${rawNum} (не в VIP и без личных правил)`);
+        }
 
         // --- КАСКАД ПРИОРИТЕТОВ ---
-        if (!canAutoReply(jid)) { 
-            // 0. Кулдаун. Молчим, чтобы не спамить.
+        if (!canTalk || !canAutoReply(jid)) { 
+            // 0. Если нельзя говорить по аудитории или кулдауну -> молчим
         } 
         else if (customReply) {
             // ПРИОРИТЕТ 1: Кастомный ответ (жесткий текст или зависящий от времени суток)
