@@ -7,11 +7,17 @@ const aiConversations = new Map();
 
 // Модели для fallback (от сильных бесплатным к быстрым)
 const fallbackModels = [
+    'google/gemini-2.5-flash:free',
+    'google/gemma-2-9b-it:free',
     'openrouter/free'
 ];
 
 export async function generateAIResponse(messageText, senderName, activePrompt) {
-    if (!OPENROUTER_API_KEY) return null;
+    if (!OPENROUTER_API_KEY) {
+        db.log(`❌ Ошибка ИИ: Отсутствует OPENROUTER_API_KEY!`);
+        return '⚠️ *[Системная Ошибка Bots]* Не настроен API ключ ИИ (OpenRouter). Проверьте файл .env!';
+    }
+    
     try {
         // 1. Инициализируем историю диалога для конкретного собеседника
         if (!aiConversations.has(senderName)) {
@@ -27,7 +33,7 @@ export async function generateAIResponse(messageText, senderName, activePrompt) 
 
 ИНСТРУКЦИЯ: Сформулируй готовый текст ответа собеседнику ОТ МОЕГО ИМЕНИ (я). Переведи смысл правила на язык собеседника (если он пишет на казахском - отвечай на казахском, если на русском - на русском).
 КАТЕГОРИЧЕСКИ ЗАПРЕЩЕНО отвечать на вопросы собеседника или решать его задачи, если это противоречит правилу.
-Отвечай коротко и естественно, как живой человек в мессенджере. Никаких формальностей.`;
+Отвечай коротко и естественно, как живой человек в мессенджере. Никаких формальностей. ИМЯ СОБЕСЕДНИКА МОЖЕШЬ ИСПОЛЬЗОВАТЬ ДЛЯ ОБРАЩЕНИЯ.`;
 
         const userTrigger = `ВХОДЯЩЕЕ СООБЩЕНИЕ ОТ СОБЕСЕДНИКА: "${messageText}"\n\nСГЕНЕРИРУЙ ТОЛЬКО ТЕКСТ ОТВЕТА (без кавычек):`;
 
@@ -38,7 +44,8 @@ export async function generateAIResponse(messageText, senderName, activePrompt) 
             { role: 'user', content: userTrigger }
         ];
 
-        let aiText = 'Кешіріңіз, түсінбедім.';
+        let aiText = '';
+        let lastError = '';
 
         // 4. Запрос к нейросети
         for (const modelId of fallbackModels) {
@@ -60,7 +67,7 @@ export async function generateAIResponse(messageText, senderName, activePrompt) 
                 });
 
                 if (!response.ok) {
-                    throw new Error(await response.text());
+                    throw new Error(`HTTP ${response.status}: ${await response.text()}`);
                 }
 
                 const data = await response.json();
@@ -69,9 +76,15 @@ export async function generateAIResponse(messageText, senderName, activePrompt) 
                     break; // Успешно получили ответ, выходим из цикла
                 }
             } catch (err) {
-                db.log(`⚠️ AI Warning (${modelId}): ${err.message}`);
-                // Если ошибка (например, упал OpenRouter), идем к следующей модели в списке
+                lastError = err.message;
+                db.log(`⚠️ AI Warning (${modelId}): ${err.message.slice(0, 100)}`);
+                // Если ошибка (например, перегрузка), идем к следующей модели в списке
             }
+        }
+        
+        if (!aiText) {
+            db.log(`❌ AI полностью сдался. Последняя ошибка: ${lastError.slice(0, 100)}`);
+            return `🔌 *[Сбой нейросети]* Серверы ИИ перегружены или недоступны. (${lastError.slice(0, 30)}...)`;
         }
 
         // 5. Сохраняем текущий обмен репликами в историю для будущих ответов
@@ -86,8 +99,8 @@ export async function generateAIResponse(messageText, senderName, activePrompt) 
         db.incStat('ai_replies');
         return aiText;
     } catch (e) {
-        db.log(`❌ AI ошибка (OpenRouter): ${e.message}`);
-        return null;
+        db.log(`❌ AI Critical: ${e.message}`);
+        return `💥 *[Критическая ошибка ИИ]* ${e.message}`;
     }
 }
 
