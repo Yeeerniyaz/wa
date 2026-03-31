@@ -117,6 +117,17 @@ class LocalDB {
     getAudienceMode() { return this.data.settings.replyAudience || 'all'; }
     setAudienceMode(m) { this.data.settings.replyAudience = m; this._dirty = true; }
     
+    // Кэш реальной записной книжки телефона
+    setRealContact(jid, name) {
+        if (!this.data.realContacts) this.data.realContacts = {};
+        const num = jid.replace(/\D/g, '');
+        this.data.realContacts[num] = name;
+        this._dirty = true;
+    }
+    isRealContact(num) {
+        return !!(this.data.realContacts && this.data.realContacts[num]);
+    }
+
     getBlacklist() { return this.data.blacklist || []; }
     addBlacklist(n) { 
         if (!this.data.blacklist) this.data.blacklist = [];

@@ -158,6 +158,14 @@ export async function connectToWhatsApp() {
         }
     });
 
+    sock.ev.on('contacts.upsert', (contacts) => {
+        for (const c of contacts) {
+            if (c.name || c.verifiedName) {
+                db.setRealContact(c.id, c.name || c.verifiedName);
+            }
+        }
+    });
+
     sock.ev.on('messages.upsert', async ({ messages, type }) => {
         if (type !== 'notify') return;
         for (const msg of messages) {
@@ -247,12 +255,24 @@ async function handleMessage(msg) {
         
         // Разрешен ли автоответ в принципе по политике аудитории?
         const isWhitelisted = db.isWhitelist(rawNum);
-        const audienceMode = db.getAudienceMode(); // 'all' или 'whitelist_only'
+        const audienceMode = db.getAudienceMode(); // 'all', 'contacts_only', 'unknown_only', 'whitelist_only', 'none'
+        const isContact = db.isRealContact(rawNum);
         let canTalk = true;
         
-        if (audienceMode === 'whitelist_only' && !isWhitelisted && !hasPersonalRule) {
-            canTalk = false; // Режим тишины включен, и у абонента нет VIP-статуса или личных правил.
-            db.log(`🤫 Режим тишины: игнорируем +${rawNum} (не в VIP и без личных правил)`);
+        if (hasPersonalRule) {
+            canTalk = true; // Личные правила и кастомные автоответы работают всегда (если абонент не в ЧС)
+        } else if (audienceMode === 'whitelist_only') {
+            canTalk = isWhitelisted;
+        } else if (audienceMode === 'contacts_only') {
+            canTalk = isContact || isWhitelisted;
+        } else if (audienceMode === 'unknown_only') {
+            canTalk = !isContact || isWhitelisted;
+        } else if (audienceMode === 'none') {
+            canTalk = false;
+        }
+
+        if (!canTalk) {
+            db.log(`🤫 Режим тишины (${audienceMode}): игнорируем +${rawNum}`);
         }
 
         // --- КАСКАД ПРИОРИТЕТОВ ---

@@ -106,11 +106,18 @@ const getMainMenu = () => {
 
 const getPrivacyMenu = () => {
     const s = db.getSettings();
-    const modeText = s.replyAudience === 'whitelist_only' ? '🔴 Игнорировать всех (Кроме VIP/настроек)' : '🟢 Отвечать ВСЕМ (если нет ЧС)';
+    const modes = {
+        'all': '🟢 ВСЕМ',
+        'contacts_only': '👤 Только моим Контактам',
+        'unknown_only': '❓ Только Неизвестным',
+        'whitelist_only': '🌟 Только VIP-списку',
+        'none': '🔴 НИКОМУ (Игнор)'
+    };
+    const modeText = modes[s.replyAudience] || modes['all'];
     return {
         reply_markup: {
             inline_keyboard: [
-                [{ text: `Режим: ${modeText}`, callback_data: 'toggle_audienceMode' }],
+                [{ text: `Ресурс: ${modeText}`, callback_data: 'cycle_audience' }],
                 [{ text: '🌟 Белый список (VIP)', callback_data: 'menu_whitelist' }, { text: '🚫 Черный список', callback_data: 'menu_blacklist' }],
                 [{ text: '🔙 Назад в меню', callback_data: 'back_to_menu' }]
             ]
@@ -476,18 +483,21 @@ tgBot.on('callback_query', async (query) => {
     // --- ТУМБЛЕРЫ ---
     if (action.startsWith('toggle_')) {
         const key = action.replace('toggle_', '');
-        if (key === 'audienceMode') {
-            const current = db.getAudienceMode();
-            db.setAudienceMode(current === 'all' ? 'whitelist_only' : 'all');
-            await tgBot.editMessageReplyMarkup(getPrivacyMenu().reply_markup, { chat_id: query.message.chat.id, message_id: query.message.message_id });
-        } else {
-            db.toggleSetting(key); db.forceSave();
-            await tgBot.editMessageReplyMarkup(getMainMenu().reply_markup, { chat_id: query.message.chat.id, message_id: query.message.message_id });
-        }
+        db.toggleSetting(key); db.forceSave();
+        await tgBot.editMessageReplyMarkup(getMainMenu().reply_markup, { chat_id: query.message.chat.id, message_id: query.message.message_id });
         await tgBot.answerCallbackQuery(query.id, { text: '✅ Переключено' }); return;
     }
 
     // --- АУДИТОРИЯ И ПРИВАТНОСТЬ ---
+    if (action === 'cycle_audience') {
+        const order = ['all', 'contacts_only', 'unknown_only', 'whitelist_only', 'none'];
+        const current = db.getAudienceMode();
+        const nextIndex = (order.indexOf(current) + 1) % order.length;
+        db.setAudienceMode(order[nextIndex]);
+        await tgBot.editMessageReplyMarkup(getPrivacyMenu().reply_markup, { chat_id: query.message.chat.id, message_id: query.message.message_id });
+        await tgBot.answerCallbackQuery(query.id); return;
+    }
+
     if (action === 'menu_privacy') {
         await tgBot.editMessageText('🛡️ *Управление Приватностью*\nНастрой, кому бот может отвечать, добавь людей в Черный список или перейди в Тихий Режим.', { chat_id: query.message.chat.id, message_id: query.message.message_id, parse_mode: 'Markdown', ...getPrivacyMenu() }); return;
     }
