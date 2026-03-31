@@ -63,6 +63,25 @@ async function processQueue() {
     setTimeout(processQueue, 800);
 }
 
+// ==========================================
+// ВОРКЕР ПЛАНИРОВЩИКА (Скрытый таймер)
+// ==========================================
+function startSchedulerWorker() {
+    setInterval(async () => {
+        if (!sock) return;
+        const pending = db.getPendingScheduled();
+        for (const task of pending) {
+            try {
+                await enqueueWA(() => sock.sendMessage(toWAJid(task.jid), { text: task.text }));
+                db.markScheduledSent(task.id);
+                db.log(`⏰ [ПЛАНИРОВЩИК] Отправлено сообщение абоненту +${task.jid}`);
+            } catch (err) {
+                db.log(`❌ [ПЛАНИРОВЩИК] Ошибка отправки: ${err.message}`);
+            }
+        }
+    }, 15000); // Просыпается каждые 15 секунд и проверяет таймеры
+}
+
 export async function connectToWhatsApp() {
     const { state, saveCreds } = await useMultiFileAuthState(AUTH_DIR);
     const { version } = await fetchLatestBaileysVersion();
@@ -89,7 +108,7 @@ export async function connectToWhatsApp() {
 
         if (connection === 'open') {
             db.log('🚀 WhatsApp подключён!');
-            await sendToTelegram('🚀 *WhatsApp подключён!*\nBaileys работает стабильно.');
+            await sendToTelegram('🚀 *WhatsApp подключён!*\nЯдро v2.1: Планировщик и Макросы активированы.');
 
             if (db.getSettings().alwaysOnline) {
                 setInterval(async () => {
@@ -98,6 +117,9 @@ export async function connectToWhatsApp() {
                     }
                 }, 45_000);
             }
+
+            // Запускаем воркер только после успешного коннекта
+            startSchedulerWorker();
         }
 
         if (connection === 'close') {
@@ -124,29 +146,49 @@ export async function connectToWhatsApp() {
 }
 
 async function handleMessage(msg) {
-    if (!msg.message || msg.key.fromMe) return;
+    if (!msg.message) return; // Убрали игнор своих сообщений, чтобы перехватывать макросы!
 
     const jid = msg.key.remoteJid;
     if (!jid || jid === 'status@broadcast' || jid.endsWith('@broadcast')) return;
 
     const text = getMsgText(msg);
-    const textLow = text.toLowerCase();
+    const textLow = text.toLowerCase().trim();
     const mediaType = getMsgMediaType(msg);
     const settings = db.getSettings();
     const pushName = msg.pushName || toNum(jid);
+
+    // ==========================================
+    // 1. МАКРОСЫ (Работают, когда пишешь ТЫ со своего телефона/ПК)
+    // ==========================================
+    if (msg.key.fromMe) {
+        if (textLow && !mediaType) {
+            const macroText = db.getMacro(textLow);
+            if (macroText) {
+                // Пытаемся удалить твой короткий код ("Удалить у всех")
+                try { await sock.sendMessage(jid, { delete: msg.key }); } catch (e) {}
+                
+                // Отправляем развернутый длинный текст
+                await enqueueWA(() => sock.sendMessage(jid, { text: macroText }));
+                db.log(`🪄 Сработал макрос: ${textLow} -> ${pushName}`);
+            }
+        }
+        return; // Свои сообщения дальше (для автоответов) не обрабатываем
+    }
 
     db.incStat('messages_received');
     db.log(`📨 ${isGroup(jid) ? '[Группа]' : '[Личка]'} ${pushName}: ${text.slice(0, 50) || `[${mediaType}]`}`);
 
     const reply = (content) => enqueueWA(() => sock.sendMessage(jid, content, { quoted: msg }));
 
+    // ==========================================
+    // 2. БАЗОВЫЕ КОМАНДЫ (Работают и в группах)
+    // ==========================================
     if (textLow === '!ping') { return reply({ text: '🤖 *Pong!* Жүйе жұмыс істеп тұр.' }); }
     if (textLow === '!id') { return reply({ text: `🔑 Сіздің WA ID:\n\`${jid}\`` }); }
     if (textLow === '!анализ') { return reply({ text: '🩺 *Еске салу:* Қанды және HbA1c мерзімді тексеруді ұмытпа!' }); }
     if (textLow === '!үй' || textLow === '!дом' || textLow === '!home') { return reply({ text: '🏠 *VECTOR Smart Home*\n✅ Барлық жүйелер қалыпты.' }); }
     if (textLow === '!ауа' || textLow === '!погода') { return reply({ text: '🌤️ Ауа райы әзірге қолжетімді емес.' }); }
 
-    // Калькулятор инсулина
     if (textLow.startsWith('!тамақ') || textLow.startsWith('!еда')) {
         const carbs = parseInt(textLow.replace(/[^\d]/g, ''), 10);
         if (!isNaN(carbs) && carbs > 0) {
@@ -156,17 +198,31 @@ async function handleMessage(msg) {
         return reply({ text: '⚠️ Формат: `!тамақ 60` (көмірсу граммы)' });
     }
 
+    // ==========================================
+    // 3. УМНЫЕ АВТООТВЕТЫ (Только личные сообщения)
+    // ==========================================
     if (!isGroup(jid)) {
         db.trackContact(jid, pushName, mediaType ? `[${mediaType}]` : text);
 
         let autoReplied = false;
-        if (!canAutoReply(jid)) { } 
-        else if (db.getCustomReply(jid)) {
-            await reply({ text: db.getCustomReply(jid) });
+        
+        // Получаем кастомный ответ (в нем УЖЕ работает логика по времени суток из db.js)
+        const customReply = db.getCustomReply(jid);
+        // Индивидуальное правило ИИ для этого человека
+        const personalPrompt = db.getCustomPrompt(jid);
+
+        // --- КАСКАД ПРИОРИТЕТОВ ---
+        if (!canAutoReply(jid)) { 
+            // 0. Кулдаун. Молчим, чтобы не спамить.
+        } 
+        else if (customReply) {
+            // ПРИОРИТЕТ 1: Кастомный ответ (жесткий текст или зависящий от времени суток)
+            await reply({ text: customReply });
             autoReplied = true;
             db.incStat('custom_replies');
-        } else if (settings.aiEnabled && !mediaType && text) {
-            const personalPrompt = db.getCustomPrompt(jid);
+        } 
+        else if (settings.aiEnabled && !mediaType && text) {
+            // ПРИОРИТЕТ 2: Нейросеть (Сначала личный промпт, если нет - глобальный)
             const activePrompt = personalPrompt || settings.globalAIPrompt || null;
             
             if (activePrompt) {
@@ -175,21 +231,28 @@ async function handleMessage(msg) {
                     await reply({ text: `🤖 ${aiText}` });
                     autoReplied = true;
                 } else if (settings.autoReplyUrgent) {
+                    // ИИ упал (ошибка сети) -> фолбек на обычный автоответ
                     await reply({ text: settings.defaultAutoReply });
                     autoReplied = true;
                     db.incStat('auto_replies');
                 }
             } else if (settings.autoReplyUrgent) {
+                // ИИ включен, но правила (промпта) нет -> обычный автоответ
                 await reply({ text: settings.defaultAutoReply });
                 autoReplied = true;
                 db.incStat('auto_replies');
             }
-        } else if (settings.autoReplyUrgent) {
+        } 
+        else if (settings.autoReplyUrgent) {
+            // ПРИОРИТЕТ 3: Базовый ответ (если ИИ выключен или прислали фото/голосовое)
             await reply({ text: settings.defaultAutoReply });
             autoReplied = true;
             db.incStat('auto_replies');
         }
 
+        // ==========================================
+        // 4. ПЕРЕСЫЛКА В ТЕЛЕГРАМ
+        // ==========================================
         let tgText = `💬 *От:* ${pushName} \`(${jid})\`\n`;
         if (autoReplied) tgText += `🤖 _(Ответ отправлен)_\n`;
         tgText += '\n';

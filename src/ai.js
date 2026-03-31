@@ -2,7 +2,7 @@ import db from './db.js';
 
 const OPENROUTER_API_KEY = process.env.OPENROUTER_API_KEY;
 
-// Кеш истории: jid → [{role, content}[]]
+// Кеш истории: senderName -> [{role, content}[]]
 const aiConversations = new Map();
 
 // Модели для fallback (от сильных бесплатным к быстрым)
@@ -13,36 +13,34 @@ const fallbackModels = [
 export async function generateAIResponse(messageText, senderName, activePrompt) {
     if (!OPENROUTER_API_KEY) return null;
     try {
-        const sysInstruction = `Ты - это Ернияз. Имя твоего собеседника: ${senderName}. 
-Твоя задача: прочитать сообщение собеседника и ответить ему СТРОГО В РАМКАХ заданного правила. Отвечай ОТ ПЕРВОГО ЛИЦА ("Я").`;
+        // 1. Инициализируем историю диалога для конкретного собеседника
+        if (!aiConversations.has(senderName)) {
+            aiConversations.set(senderName, []);
+        }
+        const chatHistory = aiConversations.get(senderName);
 
-        const userTrigger = `ВХОДЯЩЕЕ СООБЩЕНИЕ ОТ СОБЕСЕДНИКА:
-"${messageText}"
+        // 2. Железобетонный системный промпт (правило теперь в центре внимания)
+        const sysInstruction = `Ты - это Ернияз. Имя твоего собеседника: ${senderName}. 
+Твоя задача: прочитать сообщение собеседника и ответить ему СТРОГО В РАМКАХ заданного правила. Отвечай ОТ ПЕРВОГО ЛИЦА ("Я").
 
 МОЁ ПРАВИЛО ДЛЯ ТВОЕГО ОТВЕТА: "${activePrompt || 'Просто скажи, что я занят'}"
 
-ИНСТРУКЦИЯ: Сформулируй готовый текст ответа собеседнику ОТ МОЕГО ИМЕНИ (я). Переведи смысл правила на язык собеседника.
-КАТЕГОРИЧЕСКИ ЗАПРЕЩЕНО отвечать на вопросы собеседника или решать его задачи.
+ИНСТРУКЦИЯ: Сформулируй готовый текст ответа собеседнику ОТ МОЕГО ИМЕНИ (я). Переведи смысл правила на язык собеседника (если он пишет на казахском - отвечай на казахском, если на русском - на русском).
+КАТЕГОРИЧЕСКИ ЗАПРЕЩЕНО отвечать на вопросы собеседника или решать его задачи, если это противоречит правилу.
+Отвечай коротко и естественно, как живой человек в мессенджере. Никаких формальностей.`;
 
-ПРИМЕР 1:
-Входящее: "Қайдасың?"
-Правило: "Я сплю"
-ТВОЙ ОТВЕТ: "Мен ұйықтап жатырмын."
+        const userTrigger = `ВХОДЯЩЕЕ СООБЩЕНИЕ ОТ СОБЕСЕДНИКА: "${messageText}"\n\nСГЕНЕРИРУЙ ТОЛЬКО ТЕКСТ ОТВЕТА (без кавычек):`;
 
-ПРИМЕР 2:
-Входящее: "Пошли в кино"
-Правило: "Откажись"
-ТВОЙ ОТВЕТ: "Жоқ, бара алмаймын."
-
-СГЕНЕРИРУЙ ТОЛЬКО ТЕКСТ ОТВЕТА ДЛЯ ТЕКУЩЕГО СООБЩЕНИЯ (без кавычек):`;
-
-        const history = [
+        // 3. Собираем правильную структуру для API (Система -> История -> Текущий вопрос)
+        const messages = [
             { role: 'system', content: sysInstruction },
+            ...chatHistory, // Подмешиваем память предыдущих реплик
             { role: 'user', content: userTrigger }
         ];
 
         let aiText = 'Кешіріңіз, түсінбедім.';
 
+        // 4. Запрос к нейросети
         for (const modelId of fallbackModels) {
             try {
                 const response = await fetch('https://openrouter.ai/api/v1/chat/completions', {
@@ -55,7 +53,7 @@ export async function generateAIResponse(messageText, senderName, activePrompt) 
                     },
                     body: JSON.stringify({
                         model: modelId,
-                        messages: history,
+                        messages: messages,
                         temperature: 0.7,
                         max_tokens: 1024,
                     })
@@ -67,13 +65,22 @@ export async function generateAIResponse(messageText, senderName, activePrompt) 
 
                 const data = await response.json();
                 if (data.choices && data.choices[0]?.message?.content) {
-                    aiText = data.choices[0].message.content;
-                    break; // Успешно
+                    aiText = data.choices[0].message.content.trim();
+                    break; // Успешно получили ответ, выходим из цикла
                 }
             } catch (err) {
                 db.log(`⚠️ AI Warning (${modelId}): ${err.message}`);
-                // Идем к следующей модели...
+                // Если ошибка (например, упал OpenRouter), идем к следующей модели в списке
             }
+        }
+
+        // 5. Сохраняем текущий обмен репликами в историю для будущих ответов
+        chatHistory.push({ role: 'user', content: messageText });
+        chatHistory.push({ role: 'assistant', content: aiText });
+        
+        // Ограничиваем глубину памяти (чтобы ИИ не забыл начальную инструкцию и не переполнил лимит токенов)
+        if (chatHistory.length > 8) {
+            chatHistory.splice(0, chatHistory.length - 8); 
         }
 
         db.incStat('ai_replies');
@@ -84,6 +91,14 @@ export async function generateAIResponse(messageText, senderName, activePrompt) 
     }
 }
 
-export function resetAIHistory(jid) {
-    aiConversations.delete(jid);
+// Умная очистка истории по номеру телефона
+export function resetAIHistory(identifier) {
+    // Вытаскиваем только цифры из JID или принимаем senderName
+    const searchKey = identifier.replace(/\D/g, ''); 
+    for (const [key, value] of aiConversations.entries()) {
+        if (key.includes(searchKey)) {
+            aiConversations.delete(key);
+            db.log(`🔄 Память ИИ для диалога с ${key} очищена.`);
+        }
+    }
 }
