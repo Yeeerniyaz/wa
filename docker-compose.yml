@@ -12,9 +12,9 @@ services:
     deploy:
       resources:
         limits:
-          memory: 350M
+          memory: 550M
         reservations:
-          memory: 64M
+          memory: 200M
     volumes:
       - wa_data:/app/data
     stdin_open: true
