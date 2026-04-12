@@ -15,12 +15,14 @@ const DEFAULT_SETTINGS = {
     alwaysOnline: true,
     autoReplyUrgent: true,
     forwardMedia: true,
-    aiEnabled: false,
+    aiEnabled: true,
     defaultAutoReply: 'Ернияз қазір бос емес. Кейінірек жазады.',
     antiSpam: true,
     antiSpamCooldown: 60,
     ownerActivityCooldown: 1800, // 30 минут в секундах
-    globalAIPrompt: ''
+    ownerActivityEnabled: true, // Включить/выключить систему активности владельца
+    defaultReplyType: 'ai', // 'ai' или 'basic'
+    globalAIPrompt: 'Просто дурачься и подкалывай, шути если к месту, но ничего не соглашайся и не решай'
 };
 
 class LocalDB {
@@ -235,18 +237,70 @@ class LocalDB {
         const num = jid.split(':')[0].split('@')[0].replace(/\D/g, '');
         const now = new Date().toLocaleString('ru-RU', { timeZone: 'Asia/Almaty' });
         if (!this.data.contacts[num]) {
-            this.data.contacts[num] = { name, count: 0, firstSeen: now, lastSeen: now, lastMsg: '' };
+            this.data.contacts[num] = { 
+                name, 
+                count: 0, 
+                firstSeen: now, 
+                lastSeen: now, 
+                lastMsg: '',
+                replyType: null, // null = наследовать настройки, 'ai', 'basic'
+                alwaysReply: false, // Игнорировать активность владельца
+                skipOwnerActivity: false // Игнорировать проверку активности владельца
+            };
         }
         const c = this.data.contacts[num];
         c.count++;
         c.lastSeen = now;
         c.lastMsg = lastMsg ? lastMsg.slice(0, 100) : '';
         if (name && name !== num) c.name = name;
+        // Сохраняем существующие настройки если они есть
+        if (c.replyType === undefined) c.replyType = null;
+        if (c.alwaysReply === undefined) c.alwaysReply = false;
+        if (c.skipOwnerActivity === undefined) c.skipOwnerActivity = false;
         this._dirty = true;
     }
     
     getContact(num) { return this.data.contacts[num.replace(/\D/g, '')] || null; }
     getAllContacts() { return this.data.contacts; }
+
+    // Настройки автоответа для контактов
+    setContactReplyType(num, replyType) {
+        const c = this.getContact(num);
+        if (!c) return false;
+        c.replyType = replyType; // 'ai', 'basic', null
+        this._dirty = true;
+        return true;
+    }
+
+    setContactAlwaysReply(num, alwaysReply) {
+        const c = this.getContact(num);
+        if (!c) return false;
+        c.alwaysReply = alwaysReply;
+        this._dirty = true;
+        return true;
+    }
+
+    setContactSkipOwnerActivity(num, skipOwnerActivity) {
+        const c = this.getContact(num);
+        if (!c) return false;
+        c.skipOwnerActivity = skipOwnerActivity;
+        this._dirty = true;
+        return true;
+    }
+
+    getContactSettings(num) {
+        const c = this.getContact(num);
+        if (!c) return {
+            replyType: null,
+            alwaysReply: false,
+            skipOwnerActivity: false
+        };
+        return {
+            replyType: c.replyType || null,
+            alwaysReply: c.alwaysReply || false,
+            skipOwnerActivity: c.skipOwnerActivity || false
+        };
+    }
 
     listCustomReplies() { return this.data.customReplies; }
     listCustomPrompts() { return this.data.customAIPrompts; }

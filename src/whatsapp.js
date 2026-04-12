@@ -27,11 +27,22 @@ function canAutoReply(jid) {
     return true;
 }
 
-function shouldAutoRespondBasedOnOwnerActivity() {
+function shouldAutoRespondBasedOnOwnerActivity(contactSettings = null) {
     const s = db.getSettings();
+    
+    // Если система активности владельца выключена в настройках
+    if (!s.ownerActivityEnabled) {
+        return true;
+    }
+    
+    // Если контакт настроен на игнорирование активности владельца
+    if (contactSettings && contactSettings.skipOwnerActivity) {
+        return true;
+    }
+    
     const cooldownSeconds = s.ownerActivityCooldown || 1800; // 30 минут по умолчанию
     
-    // Если владелец недавно писал (в течение 30 минут), не отвечаем
+    // Если владелец недавно писал (в течение указанного времени), не отвечаем
     for (const [jid, lastTime] of ownerLastActivity.entries()) {
         if (Date.now() - lastTime < cooldownSeconds * 1000) {
             return false;
@@ -297,6 +308,90 @@ async function handleMessage(msg) {
     }
 
     // ==========================================
+    // 2.1 КОМАНДЫ УПРАВЛЕНИЯ АВТООТВЕТОМ (Только личные сообщения)
+    // ==========================================
+    if (!isGroup(jid)) {
+        // Команды управления настройками автоответа
+        if (textLow.startsWith('!автоответ')) {
+            const parts = textLow.split(' ');
+            if (parts[1] === 'выкл' || parts[1] === 'off') {
+                db.setSetting('ownerActivityEnabled', false);
+                return reply({ text: '✅ Система активности владельца выключена. Автоответ всегда активен.' });
+            } else if (parts[1] === 'вкл' || parts[1] === 'on') {
+                db.setSetting('ownerActivityEnabled', true);
+                return reply({ text: '✅ Система активности владельца включена. Автоответ отключается при вашей активности.' });
+            } else {
+                const settings = db.getSettings();
+                const status = settings.ownerActivityEnabled ? 'ВКЛ' : 'ВЫКЛ';
+                const cooldown = settings.ownerActivityCooldown || 1800;
+                return reply({ text: `⚙️ Настройки автоответа:\n• Система активности: ${status}\n• Коулдаун: ${cooldown / 60} минут\n• Тип ответа: ${settings.defaultReplyType || 'ai'}\n\nИспользуй:\n!автоответ вкл/выкл\n!коулдаун 30\n!ответ базовый/ии\n!всегдаотвечать` });
+            }
+        }
+
+        if (textLow.startsWith('!коулдаун')) {
+            const minutes = parseInt(textLow.replace(/[^\d]/g, ''), 10);
+            if (!isNaN(minutes) && minutes > 0) {
+                db.setSetting('ownerActivityCooldown', minutes * 60);
+                return reply({ text: `✅ Коулдаун автоответа установлен на ${minutes} минут. При вашей активности в течение этого времени автоответ отключается.` });
+            }
+            return reply({ text: '⚠️ Формат: `!коулдаун 30` (установить 30 минут)' });
+        }
+
+        if (textLow.startsWith('!ответ')) {
+            const parts = textLow.split(' ');
+            if (parts[1] === 'базовый' || parts[1] === 'basic') {
+                db.setSetting('defaultReplyType', 'basic');
+                return reply({ text: '✅ Тип ответа установлен: БАЗОВЫЙ (стандартный автоответ).' });
+            } else if (parts[1] === 'ии' || parts[1] === 'ai') {
+                db.setSetting('defaultReplyType', 'ai');
+                return reply({ text: '✅ Тип ответа установлен: ИИ (нейросеть с дурачеством).' });
+            } else {
+                const settings = db.getSettings();
+                const currentType = settings.defaultReplyType || 'ai';
+                return reply({ text: `🤖 Текущий тип ответа: ${currentType === 'ai' ? 'ИИ (нейросеть)' : 'БАЗОВЫЙ'}\n\nИспользуй:\n!ответ базовый - для стандартных ответов\n!ответ ии - для нейросети с дурачеством` });
+            }
+        }
+
+        if (textLow.startsWith('!всегдаотвечать')) {
+            const contactSettings = db.getContactSettings(rawNum);
+            const newStatus = !contactSettings.alwaysReply;
+            db.setContactAlwaysReply(rawNum, newStatus);
+            return reply({ text: newStatus ? 
+                `✅ Для контакта ${pushName} теперь ВСЕГДА отвечаем (игнорируется политика аудитории).` :
+                `✅ Для контакта ${pushName} теперь действует обычная политика аудитории.`
+            });
+        }
+
+        if (textLow.startsWith('!игнорироватьактивность')) {
+            const contactSettings = db.getContactSettings(rawNum);
+            const newStatus = !contactSettings.skipOwnerActivity;
+            db.setContactSkipOwnerActivity(rawNum, newStatus);
+            return reply({ text: newStatus ? 
+                `✅ Для контакта ${pushName} теперь игнорируется ваша активность (отвечаем всегда).` :
+                `✅ Для контакта ${pushName} теперь учитывается ваша активность.`
+            });
+        }
+
+        if (textLow.startsWith('!типоответа')) {
+            const parts = textLow.split(' ');
+            if (parts[1] === 'наследовать' || parts[1] === 'default') {
+                db.setContactReplyType(rawNum, null);
+                return reply({ text: `✅ Для контакта ${pushName} теперь используется тип ответа по умолчанию.` });
+            } else if (parts[1] === 'базовый' || parts[1] === 'basic') {
+                db.setContactReplyType(rawNum, 'basic');
+                return reply({ text: `✅ Для контакта ${pushName} установлен БАЗОВЫЙ тип ответа.` });
+            } else if (parts[1] === 'ии' || parts[1] === 'ai') {
+                db.setContactReplyType(rawNum, 'ai');
+                return reply({ text: `✅ Для контакта ${pushName} установлен ИИ тип ответа (нейросеть).` });
+            } else {
+                const contactSettings = db.getContactSettings(rawNum);
+                const currentType = contactSettings.replyType || 'наследовать';
+                return reply({ text: `🤖 Настройки ответа для ${pushName}:\n• Тип: ${currentType === null ? 'наследовать настройки' : currentType}\n• Всегда отвечать: ${contactSettings.alwaysReply ? 'ДА' : 'нет'}\n• Игнорировать активность: ${contactSettings.skipOwnerActivity ? 'ДА' : 'нет'}\n\nИспользуй:\n!типоответа наследовать/базовый/ии\n!всегдаотвечать\n!игнорироватьактивность` });
+            }
+        }
+    }
+
+    // ==========================================
     // 3. УМНЫЕ АВТООТВЕТЫ (Только личные сообщения)
     // ==========================================
     if (!isGroup(jid)) {
@@ -309,6 +404,9 @@ async function handleMessage(msg) {
         const personalPrompt = db.getCustomPrompt(jid);
         const hasPersonalRule = !!(customReply || personalPrompt);
         
+        // Настройки автоответа для контакта
+        const contactSettings = db.getContactSettings(rawNum);
+        
         // Разрешен ли автоответ в принципе по политике аудитории?
         const isWhitelisted = db.isWhitelist(rawNum);
         const audienceMode = db.getAudienceMode(); // 'all', 'contacts_only', 'unknown_only', 'whitelist_only', 'none'
@@ -317,6 +415,8 @@ async function handleMessage(msg) {
         
         if (hasPersonalRule) {
             canTalk = true; // Личные правила и кастомные автоответы работают всегда (если абонент не в ЧС)
+        } else if (contactSettings.alwaysReply) {
+            canTalk = true; // Для этого контакта всегда отвечаем
         } else if (audienceMode === 'whitelist_only') {
             canTalk = isWhitelisted;
         } else if (audienceMode === 'contacts_only') {
@@ -332,7 +432,7 @@ async function handleMessage(msg) {
         }
 
         // --- КАСКАД ПРИОРИТЕТОВ ---
-        const ownerActive = shouldAutoRespondBasedOnOwnerActivity();
+        const ownerActive = shouldAutoRespondBasedOnOwnerActivity(contactSettings);
         
         if (!ownerActive) {
             db.log(`⏰ Владелец активен в течение последних 30 минут - автоответ отключен`);
@@ -347,30 +447,40 @@ async function handleMessage(msg) {
             autoReplied = true;
             db.incStat('custom_replies');
         } 
-        else if (settings.aiEnabled && !mediaType && text) {
-            // ПРИОРИТЕТ 2: Нейросеть (Сначала личный промпт, если нет - глобальный)
-            const activePrompt = personalPrompt || settings.globalAIPrompt || null;
+        else if (!mediaType && text) {
+            // Определяем тип ответа для этого контакта
+            const replyType = contactSettings.replyType || settings.defaultReplyType || 'ai';
             
-            if (activePrompt) {
-                const aiText = await generateAIResponse(text, pushName, activePrompt);
-                if (aiText) {
-                    await reply({ text: `🤖 ${aiText}` });
-                    autoReplied = true;
+            if (replyType === 'ai' && settings.aiEnabled) {
+                // ПРИОРИТЕТ 2: Нейросеть (Сначала личный промпт, если нет - глобальный)
+                const activePrompt = personalPrompt || settings.globalAIPrompt || null;
+                
+                if (activePrompt) {
+                    const aiText = await generateAIResponse(text, pushName, activePrompt);
+                    if (aiText) {
+                        await reply({ text: `🤖 ${aiText}` });
+                        autoReplied = true;
+                    } else if (settings.autoReplyUrgent) {
+                        // ИИ упал (ошибка сети) -> фолбек на обычный автоответ
+                        await reply({ text: settings.defaultAutoReply });
+                        autoReplied = true;
+                        db.incStat('auto_replies');
+                    }
                 } else if (settings.autoReplyUrgent) {
-                    // ИИ упал (ошибка сети) -> фолбек на обычный автоответ
+                    // ИИ включен, но правила (промпта) нет -> обычный автоответ
                     await reply({ text: settings.defaultAutoReply });
                     autoReplied = true;
                     db.incStat('auto_replies');
                 }
             } else if (settings.autoReplyUrgent) {
-                // ИИ включен, но правила (промпта) нет -> обычный автоответ
+                // ПРИОРИТЕТ 3: Базовый ответ (если ИИ выключен, replyType='basic' или прислали фото/голосовое)
                 await reply({ text: settings.defaultAutoReply });
                 autoReplied = true;
                 db.incStat('auto_replies');
             }
         } 
-        else if (settings.autoReplyUrgent) {
-            // ПРИОРИТЕТ 3: Базовый ответ (если ИИ выключен или прислали фото/голосовое)
+        else if (settings.autoReplyUrgent && mediaType) {
+            // Для медиа-сообщений всегда базовый ответ
             await reply({ text: settings.defaultAutoReply });
             autoReplied = true;
             db.incStat('auto_replies');
