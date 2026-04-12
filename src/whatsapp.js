@@ -16,6 +16,7 @@ export const toNum = (jid) => (jid || '').replace(/@.+$/, '');
 export const isGroup = (jid) => (jid || '').includes('@g.us');
 
 const repliedRecently = new Map();
+const ownerLastActivity = new Map();
 
 function canAutoReply(jid) {
     const s = db.getSettings();
@@ -24,6 +25,30 @@ function canAutoReply(jid) {
     if (Date.now() - last < (s.antiSpamCooldown || 60) * 1000) return false;
     repliedRecently.set(jid, Date.now());
     return true;
+}
+
+function shouldAutoRespondBasedOnOwnerActivity() {
+    const s = db.getSettings();
+    const cooldownSeconds = s.ownerActivityCooldown || 1800; // 30 минут по умолчанию
+    
+    // Если владелец недавно писал (в течение 30 минут), не отвечаем
+    for (const [jid, lastTime] of ownerLastActivity.entries()) {
+        if (Date.now() - lastTime < cooldownSeconds * 1000) {
+            return false;
+        }
+    }
+    return true;
+}
+
+function updateOwnerActivity(jid) {
+    ownerLastActivity.set(jid, Date.now());
+    // Очищаем старые записи (старше 24 часов)
+    const dayAgo = Date.now() - 24 * 60 * 60 * 1000;
+    for (const [key, time] of ownerLastActivity.entries()) {
+        if (time < dayAgo) {
+            ownerLastActivity.delete(key);
+        }
+    }
 }
 
 function getMsgText(msg) {
@@ -210,7 +235,7 @@ async function handleMessage(msg) {
     // ПРЕРЫВАНИЕ ДОЛБЕЖНИКА (Interrupt)
     // ==========================================
     if (!msg.key.fromMe) {
-        const isStopped = db.stopBomber(rawNum);
+        const isStopped = db.stopBomber(jid);
         if (isStopped) {
             db.log(`🎯 Цель +${rawNum} ответила. Долбежник отключен.`);
             await sendToTelegram(`🎯 *БОЕВАЯ ТРЕВОГА: ЦЕЛЬ ОТВЕТИЛА!*\nДолбежник для \`+${rawNum}\` автоматически отключен.\n\n💬 Сообщение: _${text.slice(0, 150) || '[Медиа]'}_`);
@@ -221,6 +246,9 @@ async function handleMessage(msg) {
     // 1. МАКРОСЫ (Работают, когда пишешь ТЫ со своего телефона/ПК)
     // ==========================================
     if (msg.key.fromMe) {
+        // Обновляем активность владельца
+        updateOwnerActivity(jid);
+        
         if (textLow && !mediaType) {
             const macroText = db.getMacro(textLow);
             if (macroText) {
@@ -304,8 +332,14 @@ async function handleMessage(msg) {
         }
 
         // --- КАСКАД ПРИОРИТЕТОВ ---
-        if (!canTalk || !canAutoReply(jid)) { 
-            // 0. Если нельзя говорить по аудитории или кулдауну -> молчим
+        const ownerActive = shouldAutoRespondBasedOnOwnerActivity();
+        
+        if (!ownerActive) {
+            db.log(`⏰ Владелец активен в течение последних 30 минут - автоответ отключен`);
+        }
+        
+        if (!canTalk || !canAutoReply(jid) || !ownerActive) { 
+            // 0. Если нельзя говорить по аудитории, кулдауну или владелец активен -> молчим
         } 
         else if (customReply) {
             // ПРИОРИТЕТ 1: Кастомный ответ (жесткий текст или зависящий от времени суток)

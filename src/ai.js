@@ -1,21 +1,20 @@
 import db from './db.js';
 
-const OPENROUTER_API_KEY = process.env.OPENROUTER_API_KEY;
+const DEEPSEEK_API_KEY = process.env.DEEPSEEK_API_KEY;
 
 // Кеш истории: senderName -> [{role, content}[]]
 const aiConversations = new Map();
 
-// Модели для fallback (от сильных бесплатным к быстрым)
-const fallbackModels = [
-    'google/gemini-2.5-flash:free',
-    'google/gemma-2-9b-it:free',
-    'openrouter/free'
+// DeepSeek модели (можно выбирать разные модели)
+const DEEPSEEK_MODELS = [
+    'deepseek-chat',      // Основная модель
+    'deepseek-reasoner'   // Более умная модель (если доступна)
 ];
 
 export async function generateAIResponse(messageText, senderName, activePrompt) {
-    if (!OPENROUTER_API_KEY) {
-        db.log(`❌ Ошибка ИИ: Отсутствует OPENROUTER_API_KEY!`);
-        return '⚠️ *[Системная Ошибка Bots]* Не настроен API ключ ИИ (OpenRouter). Проверьте файл .env!';
+    if (!DEEPSEEK_API_KEY) {
+        db.log(`❌ Ошибка ИИ: Отсутствует DEEPSEEK_API_KEY!`);
+        return '⚠️ *[Системная Ошибка Bots]* Не настроен API ключ DeepSeek. Проверьте файл .env!';
     }
     
     try {
@@ -25,49 +24,67 @@ export async function generateAIResponse(messageText, senderName, activePrompt) 
         }
         const chatHistory = aiConversations.get(senderName);
 
-        // 2. Железобетонный системный промпт (правило теперь в центре внимания)
-        const sysInstruction = `Ты - это Ернияз. Имя твоего собеседника: ${senderName}. 
-Твоя задача: прочитать сообщение собеседника и ответить ему СТРОГО В РАМКАХ заданного правила. Отвечай ОТ ПЕРВОГО ЛИЦА ("Я").
+        // 2. Оптимизированный промпт для DeepSeek
+        const sysInstruction = `Ты - это Ернияз. Имя собеседника: ${senderName}.
 
-МОЁ ПРАВИЛО ДЛЯ ТВОЕГО ОТВЕТА: "${activePrompt || 'Просто скажи, что я занят'}"
+МОЁ ПРАВИЛО ОТВЕТА: "${activePrompt || 'Просто дурачься и подкалывай, шути если к месту, но ничего не соглашайся и не решай'}"
 
-ИНСТРУКЦИЯ: Сформулируй готовый текст ответа собеседнику ОТ МОЕГО ИМЕНИ (я). Переведи смысл правила на язык собеседника (если он пишет на казахском - отвечай на казахском, если на русском - на русском).
-КАТЕГОРИЧЕСКИ ЗАПРЕЩЕНО отвечать на вопросы собеседника или решать его задачи, если это противоречит правилу.
-Отвечай коротко и естественно, как живой человек в мессенджере. Никаких формальностей. ИМЯ СОБЕСЕДНИКА МОЖЕШЬ ИСПОЛЬЗОВАТЬ ДЛЯ ОБРАЩЕНИЯ.`;
+ВАЖНО:
+1. Отвечай ОТ ПЕРВОГО ЛИЦА ("Я", "меня", "мне")
+2. Строго следуй правилу выше
+3. Если собеседник пишет на казахском - отвечай на казахском, на русском - на русском
+4. Будь коротким и естественным, как в мессенджере
+5. НИКОГДА не соглашайся с собеседником полностью, всегда выражай сомнение или шути
+6. НИКОГДА не решай задачи собеседника, не давай полезных советов
+7. Поддержи диалог, но дурачься, подкалывай собеседника, шути если уместно
+8. Будь немного саркастичным, но дружелюбным
+9. Можно использовать имя собеседника для обращения
+10. Если собеседник задает серьезный вопрос - отвечай шуткой или меняй тему
+11. Не предлагай помощь, не бери на себя обязательства
+12. Используй историю диалога для контекста, чтобы шутки были уместными
+13. Будь остроумным, игривым, но не злым
 
-        const userTrigger = `ВХОДЯЩЕЕ СООБЩЕНИЕ ОТ СОБЕСЕДНИКА: "${messageText}"\n\nСГЕНЕРИРУЙ ТОЛЬКО ТЕКСТ ОТВЕТА (без кавычек):`;
+История диалога (последние сообщения):
+${chatHistory.slice(-4).map(m => `${m.role === 'user' ? 'Собеседник' : 'Ты'}: ${m.content}`).join('\n')}
 
-        // 3. Собираем правильную структуру для API (Система -> История -> Текущий вопрос)
+Сейчас собеседник написал: "${messageText}"
+
+Ответь от моего имени, следуя правилу:`;
+
+        // 3. Собираем структуру для API DeepSeek
         const messages = [
             { role: 'system', content: sysInstruction },
             ...chatHistory, // Подмешиваем память предыдущих реплик
-            { role: 'user', content: userTrigger }
+            { role: 'user', content: `Ответь на сообщение: "${messageText}"` }
         ];
 
         let aiText = '';
         let lastError = '';
 
-        // 4. Запрос к нейросети
-        for (const modelId of fallbackModels) {
+        // 4. Запрос к DeepSeek API
+        for (const modelId of DEEPSEEK_MODELS) {
             try {
-                const response = await fetch('https://openrouter.ai/api/v1/chat/completions', {
+                const response = await fetch('https://api.deepseek.com/v1/chat/completions', {
                     method: 'POST',
                     headers: {
-                        'Authorization': `Bearer ${OPENROUTER_API_KEY}`,
+                        'Authorization': `Bearer ${DEEPSEEK_API_KEY}`,
                         'Content-Type': 'application/json',
-                        'HTTP-Referer': 'https://github.com/Yeeerniyaz/wa',
-                        'X-Title': 'WhatsApp Bot'
+                        'Accept': 'application/json'
                     },
                     body: JSON.stringify({
                         model: modelId,
                         messages: messages,
                         temperature: 0.7,
-                        max_tokens: 1024,
+                        max_tokens: 512, // Уменьшим немного для быстрых ответов
+                        stream: false
                     })
                 });
 
                 if (!response.ok) {
-                    throw new Error(`HTTP ${response.status}: ${await response.text()}`);
+                    const errorText = await response.text();
+                    db.log(`⚠️ DeepSeek HTTP ${response.status}: ${errorText.slice(0, 100)}`);
+                    // Пробуем следующую модель
+                    continue;
                 }
 
                 const data = await response.json();
@@ -77,30 +94,30 @@ export async function generateAIResponse(messageText, senderName, activePrompt) 
                 }
             } catch (err) {
                 lastError = err.message;
-                db.log(`⚠️ AI Warning (${modelId}): ${err.message.slice(0, 100)}`);
-                // Если ошибка (например, перегрузка), идем к следующей модели в списке
+                db.log(`⚠️ DeepSeek Warning (${modelId}): ${err.message.slice(0, 100)}`);
+                // Если ошибка сети, идем к следующей модели
             }
         }
         
         if (!aiText) {
-            db.log(`❌ AI полностью сдался. Последняя ошибка: ${lastError.slice(0, 100)}`);
-            return `🔌 *[Сбой нейросети]* Серверы ИИ перегружены или недоступны. (${lastError.slice(0, 30)}...)`;
+            db.log(`❌ DeepSeek не ответил. Последняя ошибка: ${lastError.slice(0, 100)}`);
+            return `🔌 *[Сбой нейросети]* DeepSeek недоступен. (${lastError.slice(0, 30)}...)`;
         }
 
-        // 5. Сохраняем текущий обмен репликами в историю для будущих ответов
+        // 5. Сохраняем историю диалога
         chatHistory.push({ role: 'user', content: messageText });
         chatHistory.push({ role: 'assistant', content: aiText });
         
-        // Ограничиваем глубину памяти (чтобы ИИ не забыл начальную инструкцию и не переполнил лимит токенов)
-        if (chatHistory.length > 8) {
-            chatHistory.splice(0, chatHistory.length - 8); 
+        // Ограничиваем глубину памяти
+        if (chatHistory.length > 6) { // Немного меньше для экономии токенов
+            chatHistory.splice(0, chatHistory.length - 6); 
         }
 
         db.incStat('ai_replies');
         return aiText;
     } catch (e) {
-        db.log(`❌ AI Critical: ${e.message}`);
-        return `💥 *[Критическая ошибка ИИ]* ${e.message}`;
+        db.log(`❌ DeepSeek Critical: ${e.message}`);
+        return `💥 *[Критическая ошибка DeepSeek]* ${e.message}`;
     }
 }
 

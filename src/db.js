@@ -19,6 +19,7 @@ const DEFAULT_SETTINGS = {
     defaultAutoReply: 'Ернияз қазір бос емес. Кейінірек жазады.',
     antiSpam: true,
     antiSpamCooldown: 60,
+    ownerActivityCooldown: 1800, // 30 минут в секундах
     globalAIPrompt: ''
 };
 
